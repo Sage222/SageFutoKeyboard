@@ -99,6 +99,12 @@ fun FutoGestureStudioApp(viewModel: FutoStudioViewModel) {
     val spatialProfileMap = remember(spatialProfilesList) {
         spatialProfilesList.associateBy { it.keyChar.first() }
     }
+    val userWordsMap = remember(userWords) {
+        userWords.associateBy { it.word }
+    }
+    val userBigramsMap = remember(userBigrams) {
+        userBigrams.associateBy { it.prevWord to it.nextWord }
+    }
     val totalLearnedHits = remember(spatialProfilesList) {
         spatialProfilesList.sumOf { it.hitCount }
     }
@@ -114,18 +120,11 @@ fun FutoGestureStudioApp(viewModel: FutoStudioViewModel) {
 
     val navItems = listOf(
         NavTabItem(
-            routeId = "sandbox",
+            routeId = "keyboard_home",
             labelRes = R.string.tab_sandbox,
             selectedIcon = Icons.Filled.Keyboard,
             unselectedIcon = Icons.Outlined.Keyboard,
             testTag = "nav_tab_sandbox"
-        ),
-        NavTabItem(
-            routeId = "decoder_lab",
-            labelRes = R.string.tab_telemetry,
-            selectedIcon = Icons.Filled.Analytics,
-            unselectedIcon = Icons.Outlined.Analytics,
-            testTag = "nav_tab_telemetry"
         ),
         NavTabItem(
             routeId = "style_profile",
@@ -140,6 +139,13 @@ fun FutoGestureStudioApp(viewModel: FutoStudioViewModel) {
             selectedIcon = Icons.Filled.Hub,
             unselectedIcon = Icons.Outlined.Hub,
             testTag = "nav_tab_lexicon"
+        ),
+        NavTabItem(
+            routeId = "decoder_lab",
+            labelRes = R.string.tab_telemetry,
+            selectedIcon = Icons.Filled.Analytics,
+            unselectedIcon = Icons.Outlined.Analytics,
+            testTag = "nav_tab_telemetry"
         )
     )
 
@@ -231,13 +237,17 @@ fun FutoGestureStudioApp(viewModel: FutoStudioViewModel) {
                             uiState = uiState,
                             keyGeometries = viewModel.keyGeometries,
                             spatialProfiles = spatialProfileMap,
+                            userWordsMap = userWordsMap,
+                            userBigramsMap = userBigramsMap,
                             totalLearnedHits = totalLearnedHits,
                             learnedPrototypesCount = gesturePrototypes.size,
-                            onSelectDrill = viewModel::selectCalibrationDrill,
-                            onSwipeNextDrillWord = viewModel::swipeNextDrillWord,
+                            onExternalTextChange = viewModel::onExternalEditorTextChanged,
                             onClearEditor = viewModel::clearEditorText,
                             onToggleShift = viewModel::toggleShift,
                             onToggleDriftOverlay = viewModel::toggleDriftOverlay,
+                            onToggleNumberRow = viewModel::toggleNumberRow,
+                            onKeyTap = viewModel::onKeyTap,
+                            onGesturePreview = viewModel::previewGestureWord,
                             onGestureCompleted = viewModel::onGestureCompleted,
                             onCandidateSelected = viewModel::onCandidateSelected,
                             onBackspace = viewModel::onBackspace,
@@ -245,16 +255,7 @@ fun FutoGestureStudioApp(viewModel: FutoStudioViewModel) {
                             onPunctuation = viewModel::onPunctuation,
                             onEnter = viewModel::onEnter
                         )
-                        1 -> DecoderLabTabScreen(
-                            lastDecodeResult = uiState.lastDecodeResult,
-                            keyGeometries = viewModel.keyGeometries,
-                            spatialProfiles = spatialProfileMap,
-                            sessionLogs = sessionLogs,
-                            onSimulateWordSwipe = { word ->
-                                viewModel.simulateHumanSwipeForWord(word, commitToEditor = true)
-                            }
-                        )
-                        2 -> StyleAdaptationTabScreen(
+                        1 -> StyleAdaptationTabScreen(
                             keyGeometries = viewModel.keyGeometries,
                             spatialProfiles = spatialProfileMap,
                             hyperparams = uiState.hyperparams,
@@ -265,12 +266,19 @@ fun FutoGestureStudioApp(viewModel: FutoStudioViewModel) {
                             onResetProfile = viewModel::resetLearnedProfile,
                             onUpdateHyperparams = viewModel::updateHyperparameters
                         )
-                        3 -> LexiconNGramsTabScreen(
+                        2 -> LexiconNGramsTabScreen(
                             userWords = userWords,
                             userBigrams = userBigrams,
                             gesturePrototypes = gesturePrototypes,
                             onAddCustomWord = viewModel::addCustomWord,
                             onRemoveUserWord = viewModel::removeCustomWord
+                        )
+                        3 -> DecoderLabTabScreen(
+                            lastDecodeResult = uiState.lastDecodeResult,
+                            keyGeometries = viewModel.keyGeometries,
+                            spatialProfiles = spatialProfileMap,
+                            sessionLogs = sessionLogs,
+                            onSimulateWordSwipe = viewModel::inspectWordGestureInLab
                         )
                     }
                 }

@@ -1,6 +1,6 @@
 {
-  "name": "FUTO Gesture Studio",
-  "description": "Privacy-first Android keyboard and gesture typing engine based on FUTO Keyboard with adaptive spatial and n-gram user style learning.",
+  "name": "FUTO Keyboard",
+  "description": "Privacy-first Android keyboard APK based on FUTO Keyboard with adaptive gesture typing recognition and on-device user writing style learning.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

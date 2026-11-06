@@ -16,6 +16,7 @@ import com.example.engine.GestureCandidate
 import com.example.engine.GestureDecodeResult
 import com.example.engine.KeyGeometry
 import com.example.engine.RawTouchPoint
+import com.example.ui.components.ShiftState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -26,15 +27,17 @@ import kotlinx.coroutines.launch
 import kotlin.math.sin
 
 data class StudioUiState(
-    val editorText: String = "futo adaptive ",
-    val lastCommittedWord: String = "adaptive",
-    val prevContextWord: String = "futo",
-    val activeDrillIndex: Int = 0,
-    val isShiftActive: Boolean = false,
-    val showDriftOverlay: Boolean = true,
+    val editorText: String = "",
+    val composingWord: String = "",
+    val lastCommittedWord: String = "",
+    val prevContextWord: String = "",
+    val justCommittedGestureWord: Boolean = false,
+    val shiftState: ShiftState = ShiftState.ONE_SHOT,
+    val showNumberRow: Boolean = true,
+    val showDriftOverlay: Boolean = false,
     val hyperparams: DecoderHyperparameters = DecoderHyperparameters(),
     val lastDecodeResult: GestureDecodeResult? = null,
-    val statusBannerText: String = "Swipe across the keys below or tap 'Simulate Thumb Swipe' to test recognition & style learning."
+    val rejectedGestureDecode: GestureDecodeResult? = null
 )
 
 class FutoStudioViewModel(
@@ -45,6 +48,9 @@ class FutoStudioViewModel(
     val uiState: StateFlow<StudioUiState> = _uiState.asStateFlow()
 
     val keyGeometries: Map<Char, KeyGeometry> = repository.gestureEngine.qwertyKeys
+
+    private var lastShiftTapMs = 0L
+    private var lastSpaceTapMs = 0L
 
     val spatialProfiles: StateFlow<List<KeySpatialProfileEntity>> = repository.keySpatialProfilesFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -64,16 +70,72 @@ class FutoStudioViewModel(
     init {
         viewModelScope.launch {
             repository.ensureStarterSeedIfEmpty()
-            // Perform an initial synthetic gesture decode for "keyboard" after "futo adaptive"
-            // so the Decoder Lab & Candidate Strip have rich live data immediately on launch.
-            simulateHumanSwipeForWord("keyboard", commitToEditor = true)
         }
     }
 
+    /**
+     * Handles user editing the native Android TextField directly via system IME or cursor.
+     */
+    fun onExternalEditorTextChanged(newText: String) {
+        val words = extractWords(newText)
+        _uiState.update {
+            it.copy(
+                editorText = newText,
+                composingWord = "",
+                justCommittedGestureWord = false,
+                lastCommittedWord = words.lastOrNull().orEmpty(),
+                prevContextWord = if (words.size >= 2) words[words.size - 2] else ""
+            )
+        }
+    }
+
+    /**
+     * Handles single-key tap (letters compose a word; numbers/symbols commit immediately).
+     */
+    fun onKeyTap(ch: Char) {
+        val state = _uiState.value
+        if (ch.isLetter()) {
+            val newComposing = state.composingWord + ch
+            val nextShift = if (state.shiftState == ShiftState.ONE_SHOT) ShiftState.OFF else state.shiftState
+            _uiState.update {
+                it.copy(
+                    composingWord = newComposing,
+                    justCommittedGestureWord = false,
+                    shiftState = nextShift
+                )
+            }
+        } else {
+            val flushed = flushComposingWordIfNeeded(state, appendSpace = false)
+            _uiState.update {
+                flushed.copy(
+                    editorText = flushed.editorText + ch,
+                    justCommittedGestureWord = false
+                )
+            }
+        }
+    }
+
+    fun previewGestureWord(partialPoints: List<RawTouchPoint>): String? {
+        if (partialPoints.size < 3) return null
+        val state = _uiState.value
+        return repository.gestureEngine.decodeGesture(
+            rawPoints = partialPoints,
+            prevContextWord = state.prevContextWord,
+            hyperparams = state.hyperparams,
+            spatialProfiles = spatialProfiles.value.associateBy { it.keyChar.first() },
+            userWords = userWords.value.associateBy { it.word },
+            userBigrams = userBigrams.value.associateBy { it.prevWord to it.nextWord },
+            userPrototypes = gesturePrototypes.value.associateBy { it.word }
+        ).adaptiveTopWord.ifEmpty { null }
+    }
+
+    /**
+     * Handles a completed continuous swipe gesture across the keyboard.
+     */
     fun onGestureCompleted(rawPoints: List<RawTouchPoint>) {
         if (rawPoints.isEmpty()) return
-        val state = _uiState.value
-        val currentWords = extractWords(state.editorText)
+        val preFlushedState = flushComposingWordIfNeeded(_uiState.value, appendSpace = true)
+        val currentWords = extractWords(preFlushedState.editorText)
         val contextWord = currentWords.lastOrNull() ?: ""
 
         val profileMap = spatialProfiles.value.associateBy { it.keyChar.first() }
@@ -84,7 +146,7 @@ class FutoStudioViewModel(
         val decodeResult = repository.gestureEngine.decodeGesture(
             rawPoints = rawPoints,
             prevContextWord = contextWord,
-            hyperparams = state.hyperparams,
+            hyperparams = preFlushedState.hyperparams,
             spatialProfiles = profileMap,
             userWords = wordsMap,
             userBigrams = bigramsMap,
@@ -92,27 +154,22 @@ class FutoStudioViewModel(
         )
 
         val topCandidate = decodeResult.candidates.firstOrNull() ?: return
-        val committed = if (state.isShiftActive) {
-            topCandidate.word.replaceFirstChar { it.uppercase() }
-        } else {
-            topCandidate.word
-        }
+        val committed = applyShift(topCandidate.word, preFlushedState.shiftState)
+        val newEditorText = appendWordToText(preFlushedState.editorText, committed)
+        val nextShift = if (preFlushedState.shiftState == ShiftState.ONE_SHOT) ShiftState.OFF else preFlushedState.shiftState
 
-        val newEditorText = appendWordToText(state.editorText, committed)
-        val statusMsg = if (decodeResult.wasPromotedByAdaptation) {
-            "Style Learning promoted '${topCandidate.word}' (${topCandidate.adaptiveScore.toInt()}%) over static baseline '${decodeResult.staticTopWord}'!"
-        } else {
-            "Recognized '${topCandidate.word}' (${topCandidate.adaptiveScore.toInt()}% confidence • ${topCandidate.explanationBadge})"
-        }
+        val rejected = preFlushedState.rejectedGestureDecode
 
         _uiState.update {
-            it.copy(
+            preFlushedState.copy(
                 editorText = newEditorText,
-                prevContextWord = contextWord,
-                lastCommittedWord = topCandidate.word,
-                isShiftActive = false,
+                composingWord = "",
+                prevContextWord = topCandidate.word.lowercase(),
+                lastCommittedWord = committed,
+                justCommittedGestureWord = true,
+                shiftState = nextShift,
                 lastDecodeResult = decodeResult,
-                statusBannerText = statusMsg
+                rejectedGestureDecode = null
             )
         }
 
@@ -120,82 +177,228 @@ class FutoStudioViewModel(
             repository.learnFromCommittedGesture(
                 committedWord = topCandidate.word,
                 prevContextWord = contextWord,
-                decodeResult = decodeResult,
-                hyperparams = state.hyperparams,
-                isExplicitUserCorrection = false
+                decodeResult = rejected ?: decodeResult,
+                hyperparams = preFlushedState.hyperparams,
+                isExplicitUserCorrection = rejected != null
             )
         }
     }
 
     /**
-     * Triggered when the user taps one of the candidate chips in the suggestion bar.
-     * If `isCorrection` is true (chip index > 0), replaces the last committed word in the editor
-     * and applies higher-weight supervised style learning to key drift, bigrams, and prototypes!
+     * Triggered when the user taps a candidate in the suggestion strip.
      */
     fun onCandidateSelected(candidate: GestureCandidate, isCorrection: Boolean) {
         val state = _uiState.value
-        val decodeResult = state.lastDecodeResult ?: return
+        if (state.composingWord.isNotEmpty()) {
+            // Complete the currently composing tap-typed word
+            val formatted = if (state.composingWord.first().isUpperCase()) {
+                candidate.word.replaceFirstChar { it.uppercase() }
+            } else {
+                candidate.word
+            }
+            val newText = appendWordToText(state.editorText, formatted)
+            val contextForLearn = state.prevContextWord
+            val pendingRejected = state.rejectedGestureDecode
 
-        val updatedText = if (isCorrection && state.lastCommittedWord.isNotEmpty()) {
-            replaceLastWordInText(state.editorText, candidate.word, state.isShiftActive)
+            _uiState.update {
+                it.copy(
+                    editorText = newText,
+                    composingWord = "",
+                    prevContextWord = candidate.word.lowercase(),
+                    lastCommittedWord = formatted,
+                    justCommittedGestureWord = false,
+                    rejectedGestureDecode = null
+                )
+            }
+
+            viewModelScope.launch {
+                if (pendingRejected != null) {
+                    repository.learnFromCommittedGesture(
+                        committedWord = candidate.word,
+                        prevContextWord = contextForLearn,
+                        decodeResult = pendingRejected,
+                        hyperparams = state.hyperparams,
+                        isExplicitUserCorrection = true
+                    )
+                } else {
+                    repository.addCustomVocabularyWord(candidate.word, contextForLearn)
+                }
+            }
+        } else if (state.justCommittedGestureWord && state.lastDecodeResult != null) {
+            val capitalize = state.lastCommittedWord.firstOrNull()?.isUpperCase() == true
+            val updatedText = if (isCorrection && state.lastCommittedWord.isNotEmpty()) {
+                replaceLastWordInText(state.editorText, candidate.word, capitalize)
+            } else {
+                state.editorText
+            }
+            val formatted = if (capitalize) candidate.word.replaceFirstChar { it.uppercase() } else candidate.word
+
+            _uiState.update {
+                it.copy(
+                    editorText = updatedText,
+                    lastCommittedWord = formatted,
+                    prevContextWord = candidate.word.lowercase()
+                )
+            }
+
+            viewModelScope.launch {
+                repository.learnFromCommittedGesture(
+                    committedWord = candidate.word,
+                    prevContextWord = state.prevContextWord,
+                    decodeResult = state.lastDecodeResult,
+                    hyperparams = state.hyperparams,
+                    isExplicitUserCorrection = isCorrection
+                )
+            }
         } else {
-            appendWordToText(state.editorText, candidate.word)
+            // Next-word prediction chip tap
+            val formatted = applyShift(candidate.word, state.shiftState)
+            val newText = appendWordToText(state.editorText, formatted)
+            val nextShift = if (state.shiftState == ShiftState.ONE_SHOT) ShiftState.OFF else state.shiftState
+            _uiState.update {
+                it.copy(
+                    editorText = newText,
+                    lastCommittedWord = formatted,
+                    prevContextWord = candidate.word.lowercase(),
+                    shiftState = nextShift
+                )
+            }
+        }
+    }
+
+    fun onBackspace() {
+        val state = _uiState.value
+        if (state.composingWord.isNotEmpty()) {
+            val dropped = state.composingWord.dropLast(1)
+            _uiState.update { it.copy(composingWord = dropped) }
+            return
         }
 
-        val banner = if (isCorrection) {
-            "Learned correction -> '${candidate.word}': shifted key offsets, boosted bigram '${state.prevContextWord} -> ${candidate.word}', and updated 16-pt prototype!"
-        } else {
-            "Confirmed '${candidate.word}' — reinforced personal gesture prototype & key offsets."
+        if (state.justCommittedGestureWord && state.lastCommittedWord.isNotEmpty()) {
+            // FUTO / LatinIME single-backspace gesture undo + arm correction learning!
+            val trimmed = state.editorText.trimEnd()
+            val lastSpace = trimmed.lastIndexOfAny(charArrayOf(' ', '\n'))
+            val nextText = if (lastSpace >= 0) trimmed.substring(0, lastSpace + 1) else ""
+            val remainingWords = extractWords(nextText)
+            _uiState.update {
+                it.copy(
+                    editorText = nextText,
+                    lastCommittedWord = remainingWords.lastOrNull().orEmpty(),
+                    prevContextWord = remainingWords.lastOrNull().orEmpty(),
+                    justCommittedGestureWord = false,
+                    rejectedGestureDecode = state.lastDecodeResult,
+                    shiftState = if (nextText.isEmpty()) ShiftState.ONE_SHOT else state.shiftState
+                )
+            }
+            return
         }
 
+        if (state.editorText.isNotEmpty()) {
+            val nextText = state.editorText.dropLast(1)
+            val remainingWords = extractWords(nextText)
+            _uiState.update {
+                it.copy(
+                    editorText = nextText,
+                    lastCommittedWord = remainingWords.lastOrNull().orEmpty(),
+                    prevContextWord = remainingWords.lastOrNull().orEmpty(),
+                    shiftState = if (nextText.isEmpty()) ShiftState.ONE_SHOT else state.shiftState
+                )
+            }
+        }
+    }
+
+    fun onSpace() {
+        val now = SystemClock.uptimeMillis()
+        val state = _uiState.value
+        if (state.composingWord.isNotEmpty()) {
+            val flushed = flushComposingWordIfNeeded(state, appendSpace = true)
+            _uiState.update { flushed.copy(justCommittedGestureWord = false) }
+        } else if ((now - lastSpaceTapMs) < 350L && state.editorText.endsWith(" ") && state.editorText.length >= 2) {
+            // Double-space period
+            val withoutSpace = state.editorText.dropLast(1) + ". "
+            _uiState.update {
+                it.copy(
+                    editorText = withoutSpace,
+                    justCommittedGestureWord = false,
+                    shiftState = ShiftState.ONE_SHOT
+                )
+            }
+        } else {
+            _uiState.update {
+                it.copy(
+                    editorText = it.editorText + " ",
+                    justCommittedGestureWord = false
+                )
+            }
+        }
+        lastSpaceTapMs = now
+    }
+
+    fun onPunctuation(punct: String) {
+        val state = flushComposingWordIfNeeded(_uiState.value, appendSpace = false)
+        val base = state.editorText.trimEnd()
+        val nextShift = if (punct == "." || punct == "!" || punct == "?") ShiftState.ONE_SHOT else state.shiftState
         _uiState.update {
-            it.copy(
-                editorText = updatedText,
-                lastCommittedWord = candidate.word,
-                isShiftActive = false,
-                statusBannerText = banner
+            state.copy(
+                editorText = if (base.isEmpty()) "$punct " else "$base$punct ",
+                justCommittedGestureWord = false,
+                shiftState = nextShift
             )
         }
+    }
 
-        viewModelScope.launch {
-            repository.learnFromCommittedGesture(
-                committedWord = candidate.word,
-                prevContextWord = state.prevContextWord,
-                decodeResult = decodeResult,
-                hyperparams = state.hyperparams,
-                isExplicitUserCorrection = isCorrection
+    fun onEnter() {
+        val state = flushComposingWordIfNeeded(_uiState.value, appendSpace = false)
+        _uiState.update {
+            state.copy(
+                editorText = state.editorText + "\n",
+                justCommittedGestureWord = false,
+                shiftState = ShiftState.ONE_SHOT
+            )
+        }
+    }
+
+    fun toggleShift() {
+        val now = SystemClock.uptimeMillis()
+        _uiState.update { state ->
+            val next = when {
+                state.shiftState == ShiftState.ONE_SHOT && (now - lastShiftTapMs) < 380L -> ShiftState.CAPS_LOCK
+                state.shiftState == ShiftState.OFF -> ShiftState.ONE_SHOT
+                else -> ShiftState.OFF
+            }
+            state.copy(shiftState = next)
+        }
+        lastShiftTapMs = now
+    }
+
+    fun toggleDriftOverlay() {
+        _uiState.update { it.copy(showDriftOverlay = !it.showDriftOverlay) }
+    }
+
+    fun toggleNumberRow(enabled: Boolean) {
+        _uiState.update { it.copy(showNumberRow = enabled) }
+    }
+
+    fun clearEditorText() {
+        _uiState.update {
+            it.copy(
+                editorText = "",
+                composingWord = "",
+                lastCommittedWord = "",
+                prevContextWord = "",
+                justCommittedGestureWord = false,
+                shiftState = ShiftState.ONE_SHOT
             )
         }
     }
 
     /**
-     * Generates a realistic human thumb swipe trajectory for `targetWord` (with slight ergonomic
-     * thumb drift and corner rounding) and runs it through the full gesture recognition pipeline.
+     * Used in the Decoder Lab tab to inspect how the gesture engine decodes a specific word.
      */
-    fun simulateHumanSwipeForWord(targetWord: String, commitToEditor: Boolean = true) {
+    fun inspectWordGestureInLab(targetWord: String) {
         val clean = targetWord.trim().lowercase().filter { it in 'a'..'z' }
         if (clean.isEmpty()) return
-
         val profileMap = spatialProfiles.value.associateBy { it.keyChar.first() }
-        val baseVertices = mutableListOf<Pair<Float, Float>>()
-        for (i in clean.indices) {
-            val ch = clean[i]
-            val geom = keyGeometries[ch] ?: continue
-            val drift = profileMap[ch]
-            // Simulate user's natural thumb offset + slight corner rounding on interior letters
-            val dx = (drift?.driftX ?: 0.014f) * 0.9f
-            val dy = (drift?.driftY ?: 0.012f) * 0.9f
-            val x = (geom.canonicalX + dx).coerceIn(0.03f, 0.97f)
-            val y = (geom.canonicalY + dy).coerceIn(0.05f, 0.95f)
-            baseVertices.add(x to y)
-            // If consecutive duplicate letter (e.g. 'll' in hello, 'ee' in feel/coffee), add a micro-dwell loop
-            if (i > 0 && clean[i] == clean[i - 1]) {
-                baseVertices.add((x + 0.018f) to (y - 0.018f))
-                baseVertices.add(x to y)
-            }
-        }
-        if (baseVertices.isEmpty()) return
-
         val densePairs = repository.gestureEngine.buildWordTemplate32(clean, profileMap, targetCount = 28)
         val startClock = SystemClock.uptimeMillis()
         val rawPoints = densePairs.mapIndexed { idx, (px, py) ->
@@ -207,120 +410,17 @@ class FutoStudioViewModel(
                 timestampMs = startClock + (idx * 16L)
             )
         }
-
-        if (commitToEditor) {
-            onGestureCompleted(rawPoints)
-        } else {
-            val state = _uiState.value
-            val currentWords = extractWords(state.editorText)
-            val contextWord = currentWords.lastOrNull() ?: ""
-            val decodeResult = repository.gestureEngine.decodeGesture(
-                rawPoints = rawPoints,
-                prevContextWord = contextWord,
-                hyperparams = state.hyperparams,
-                spatialProfiles = profileMap,
-                userWords = userWords.value.associateBy { it.word },
-                userBigrams = userBigrams.value.associateBy { it.prevWord to it.nextWord },
-                userPrototypes = gesturePrototypes.value.associateBy { it.word }
-            )
-            _uiState.update {
-                it.copy(
-                    lastDecodeResult = decodeResult,
-                    statusBannerText = "Simulated thumb trajectory for '$clean' -> Top match '${decodeResult.adaptiveTopWord}'"
-                )
-            }
-        }
-    }
-
-    /**
-     * Simulates next word in the active calibration drill so the user can test rapid phrase progression.
-     */
-    fun swipeNextDrillWord() {
         val state = _uiState.value
-        val drill = FutoLexicon.calibrationDrills[state.activeDrillIndex % FutoLexicon.calibrationDrills.size]
-        val targetWords = extractWords(drill.targetPhrase)
-        val typedWords = extractWords(state.editorText)
-        val nextIdx = typedWords.size % targetWords.size
-        if (typedWords.size >= targetWords.size) {
-            _uiState.update { it.copy(editorText = "") }
-        }
-        simulateHumanSwipeForWord(targetWords[nextIdx], commitToEditor = true)
-    }
-
-    fun selectCalibrationDrill(index: Int) {
-        val safeIdx = index.coerceIn(0, FutoLexicon.calibrationDrills.lastIndex)
-        val drill = FutoLexicon.calibrationDrills[safeIdx]
-        _uiState.update {
-            it.copy(
-                activeDrillIndex = safeIdx,
-                editorText = "",
-                prevContextWord = "",
-                lastCommittedWord = "",
-                statusBannerText = "Loaded Calibration Drill: \"${drill.title}\""
-            )
-        }
-    }
-
-    fun toggleShift() {
-        _uiState.update { it.copy(isShiftActive = !it.isShiftActive) }
-    }
-
-    fun toggleDriftOverlay() {
-        _uiState.update { it.copy(showDriftOverlay = !it.showDriftOverlay) }
-    }
-
-    fun onBackspace() {
-        _uiState.update { state ->
-            val trimmed = state.editorText.trimEnd()
-            if (trimmed.isEmpty()) {
-                state.copy(editorText = "", lastCommittedWord = "")
-            } else {
-                // Delete last word if preceded by space, or last char
-                val lastSpace = trimmed.lastIndexOf(' ')
-                val nextText = if (lastSpace >= 0) {
-                    trimmed.substring(0, lastSpace + 1)
-                } else {
-                    ""
-                }
-                val remainingWords = extractWords(nextText)
-                state.copy(
-                    editorText = nextText,
-                    lastCommittedWord = remainingWords.lastOrNull() ?: "",
-                    prevContextWord = if (remainingWords.size >= 2) remainingWords[remainingWords.size - 2] else ""
-                )
-            }
-        }
-    }
-
-    fun onSpace() {
-        _uiState.update { state ->
-            if (state.editorText.endsWith(" ")) state
-            else state.copy(editorText = state.editorText + " ")
-        }
-    }
-
-    fun onPunctuation(punct: String) {
-        _uiState.update { state ->
-            val base = state.editorText.trimEnd()
-            state.copy(editorText = if (base.isEmpty()) "$punct " else "$base$punct ")
-        }
-    }
-
-    fun onEnter() {
-        _uiState.update { state ->
-            state.copy(editorText = state.editorText.trimEnd() + "\n")
-        }
-    }
-
-    fun clearEditorText() {
-        _uiState.update {
-            it.copy(
-                editorText = "",
-                lastCommittedWord = "",
-                prevContextWord = "",
-                statusBannerText = "Cleared sandbox editor."
-            )
-        }
+        val decodeResult = repository.gestureEngine.decodeGesture(
+            rawPoints = rawPoints,
+            prevContextWord = state.prevContextWord,
+            hyperparams = state.hyperparams,
+            spatialProfiles = profileMap,
+            userWords = userWords.value.associateBy { it.word },
+            userBigrams = userBigrams.value.associateBy { it.prevWord to it.nextWord },
+            userPrototypes = gesturePrototypes.value.associateBy { it.word }
+        )
+        _uiState.update { it.copy(lastDecodeResult = decodeResult) }
     }
 
     fun updateHyperparameters(transform: (DecoderHyperparameters) -> DecoderHyperparameters) {
@@ -332,24 +432,12 @@ class FutoStudioViewModel(
     fun applyThumbCalibrationPreset(rightHanded: Boolean) {
         viewModelScope.launch {
             repository.applyErgonomicThumbPreset(rightHanded)
-            _uiState.update {
-                it.copy(
-                    statusBannerText = if (rightHanded) {
-                        "Applied Right-Thumb Arc Ergonomic Drift Profile across all 26 keys."
-                    } else {
-                        "Applied Left-Thumb Arc Ergonomic Drift Profile across all 26 keys."
-                    }
-                )
-            }
         }
     }
 
     fun addCustomWord(word: String, prevContextWord: String) {
         viewModelScope.launch {
             repository.addCustomVocabularyWord(word, prevContextWord)
-            _uiState.update {
-                it.copy(statusBannerText = "Added '$word' to personal gesture dictionary.")
-            }
         }
     }
 
@@ -362,11 +450,55 @@ class FutoStudioViewModel(
     fun resetLearnedProfile() {
         viewModelScope.launch {
             repository.resetAllLearnedStyleData()
-            _uiState.update {
-                it.copy(
-                    statusBannerText = "Reset all learned spatial offsets, bigrams, and gesture prototypes to zero baseline."
+        }
+    }
+
+    private fun flushComposingWordIfNeeded(state: StudioUiState, appendSpace: Boolean): StudioUiState {
+        if (state.composingWord.isEmpty()) return state
+        val word = state.composingWord
+        val clean = word.lowercase().filter { it in 'a'..'z' }
+        val contextForLearn = state.prevContextWord
+        val pendingRejected = state.rejectedGestureDecode
+
+        viewModelScope.launch {
+            if (pendingRejected != null && clean.isNotEmpty()) {
+                repository.learnFromCommittedGesture(
+                    committedWord = clean,
+                    prevContextWord = contextForLearn,
+                    decodeResult = pendingRejected,
+                    hyperparams = state.hyperparams,
+                    isExplicitUserCorrection = true
                 )
+            } else if (clean.isNotEmpty()) {
+                repository.addCustomVocabularyWord(clean, contextForLearn)
             }
+        }
+
+        val nextEditor = if (appendSpace) {
+            appendWordToText(state.editorText, word)
+        } else {
+            val base = if (state.editorText.isEmpty() || state.editorText.endsWith(" ") || state.editorText.endsWith("\n")) {
+                state.editorText
+            } else {
+                "${state.editorText} "
+            }
+            base + word
+        }
+
+        return state.copy(
+            editorText = nextEditor,
+            composingWord = "",
+            lastCommittedWord = word,
+            prevContextWord = clean,
+            rejectedGestureDecode = null
+        )
+    }
+
+    private fun applyShift(word: String, shift: ShiftState): String {
+        return when (shift) {
+            ShiftState.CAPS_LOCK -> word.uppercase()
+            ShiftState.ONE_SHOT -> word.replaceFirstChar { it.uppercase() }
+            ShiftState.OFF -> word
         }
     }
 

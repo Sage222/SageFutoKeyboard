@@ -2,9 +2,6 @@ package com.example.ui.components
 
 import android.os.SystemClock
 import android.view.HapticFeedbackConstants
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -17,24 +14,26 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.automirrored.filled.KeyboardReturn
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.KeyboardCapslock
 import androidx.compose.material.icons.filled.MyLocation
-import androidx.compose.material.icons.filled.SpaceBar
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -88,34 +87,69 @@ import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import kotlin.math.hypot
 
+enum class ShiftState {
+    OFF,
+    ONE_SHOT,
+    CAPS_LOCK
+}
+
+enum class KeyboardLayoutMode {
+    ALPHABET,
+    SYMBOLS,
+    SYMBOLS_EXT
+}
+
+enum class ImeActionType {
+    RETURN,
+    DONE,
+    SEARCH,
+    SEND,
+    GO,
+    NEXT
+}
+
+private val topRowNumberHints = mapOf(
+    'q' to '1', 'w' to '2', 'e' to '3', 'r' to '4', 't' to '5',
+    'y' to '6', 'u' to '7', 'i' to '8', 'o' to '9', 'p' to '0'
+)
+
 /**
- * Interactive FUTO Adaptive Gesture Keyboard component supporting:
- * - Fluid continuous Bezier swipe gesture recognition across all 26 QWERTY keys
- * - Live inflection node & learned spatial drift overlay on keycaps
- * - Interactive candidate suggestion strip where tapping an alternate candidate immediately
- *   triggers supervised style learning (updating key offsets, bigrams, and gesture prototypes)
+ * Production-grade FUTO Adaptive Keyboard View supporting:
+ * - True Tap Typing (character composition, auto-correct, prefix completions, long-press numbers)
+ * - Continuous Bezier Swipe Gesture Typing with real-time floating word preview
+ * - Full `?123` Symbols & `=\<` Extended Symbols layouts + optional Dedicated Number Row
+ * - Learned Per-Key Spatial Drift overlay & Supervised Candidate Correction learning
  */
 @Composable
 fun FutoGestureKeyboardView(
     keyGeometries: Map<Char, KeyGeometry>,
     spatialProfiles: Map<Char, KeySpatialProfileEntity>,
+    candidates: List<GestureCandidate>,
+    composingWord: String,
     lastDecodeResult: GestureDecodeResult?,
     showDriftOverlay: Boolean,
-    isShiftActive: Boolean,
+    showNumberRow: Boolean = true,
+    shiftState: ShiftState = ShiftState.OFF,
+    imeActionType: ImeActionType = ImeActionType.RETURN,
     onToggleShift: () -> Unit,
     onToggleDriftOverlay: () -> Unit,
+    onOpenSettings: (() -> Unit)? = null,
+    onKeyTap: (Char) -> Unit,
+    onGesturePreview: ((List<RawTouchPoint>) -> String?)? = null,
     onGestureCompleted: (List<RawTouchPoint>) -> Unit,
     onCandidateSelected: (GestureCandidate, isCorrection: Boolean) -> Unit,
     onBackspace: () -> Unit,
     onSpace: () -> Unit,
     onPunctuation: (String) -> Unit,
-    onEnter: () -> Unit,
+    onEnterAction: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val view = LocalView.current
+    var layoutMode by remember { mutableStateOf(KeyboardLayoutMode.ALPHABET) }
     val activeTrail = remember { mutableStateListOf<RawTouchPoint>() }
     var hoveredKey by remember { mutableStateOf<Char?>(null) }
-    var isSwiping by remember { mutableStateOf(false) }
+    var isSwipingGesture by remember { mutableStateOf(false) }
+    var liveSwipePreviewWord by remember { mutableStateOf<String?>(null) }
 
     val textMeasurer = rememberTextMeasurer()
 
@@ -127,301 +161,455 @@ fun FutoGestureKeyboardView(
             .padding(bottom = 4.dp)
             .testTag("futo_gesture_keyboard")
     ) {
-        // 1. Candidate Prediction & Adaptation Telemetry Strip
-        CandidateSuggestionBar(
-            decodeResult = lastDecodeResult,
+        // 1. Suggestion Strip (Candidates + Composing Word + Settings/Drift Quick Icons)
+        CandidateSuggestionToolbar(
+            candidates = candidates,
+            composingWord = composingWord,
+            wasPromotedByAdaptation = lastDecodeResult?.wasPromotedByAdaptation == true,
+            isSwiping = isSwipingGesture,
+            liveSwipePreviewWord = liveSwipePreviewWord,
             hoveredKey = hoveredKey,
-            isSwiping = isSwiping,
-            activePointCount = activeTrail.size,
+            showDriftOverlay = showDriftOverlay,
+            onToggleDriftOverlay = {
+                view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                onToggleDriftOverlay()
+            },
+            onOpenSettings = onOpenSettings,
             onCandidateClick = { candidate, index ->
                 view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                 onCandidateSelected(candidate, index > 0)
             }
         )
 
-        // 2. Main 26-Key Gesture Canvas (3 rows of QWERTY letters)
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(168.dp)
-                .padding(horizontal = 4.dp, vertical = 2.dp)
-                .testTag("gesture_letter_canvas")
-                .semantics { contentDescription = "Gesture typing QWERTY key area" }
-                .pointerInput(keyGeometries, spatialProfiles) {
-                    val widthPx = size.width.toFloat().coerceAtLeast(1f)
-                    val heightPx = size.height.toFloat().coerceAtLeast(1f)
-
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        activeTrail.clear()
-                        isSwiping = true
-                        val normX = (down.position.x / widthPx).coerceIn(0.01f, 0.99f)
-                        val normY = (down.position.y / heightPx).coerceIn(0.01f, 0.99f)
-                        val startMs = SystemClock.uptimeMillis()
-
-                        activeTrail.add(RawTouchPoint(normX, normY, startMs))
-                        val initialKey = findClosestKey(normX, normY, keyGeometries, spatialProfiles)
-                        hoveredKey = initialKey
-                        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-
-                        var lastKey = initialKey
-                        do {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull() ?: break
-                            if (change.pressed) {
-                                val cx = (change.position.x / widthPx).coerceIn(0.01f, 0.99f)
-                                val cy = (change.position.y / heightPx).coerceIn(0.01f, 0.99f)
-                                val nowMs = SystemClock.uptimeMillis()
-                                val prev = activeTrail.lastOrNull()
-                                if (prev == null || hypot(cx - prev.x, cy - prev.y) >= 0.006f) {
-                                    activeTrail.add(RawTouchPoint(cx, cy, nowMs))
-                                }
-                                val currentKey = findClosestKey(cx, cy, keyGeometries, spatialProfiles)
-                                hoveredKey = currentKey
-                                if (currentKey != lastKey) {
-                                    lastKey = currentKey
-                                }
-                                change.consume()
-                            }
-                        } while (event.changes.any { it.pressed })
-
-                        val finishedPoints = activeTrail.toList()
-                        isSwiping = false
-                        hoveredKey = null
-                        activeTrail.clear()
-                        if (finishedPoints.isNotEmpty()) {
-                            onGestureCompleted(finishedPoints)
-                        }
-                    }
-                }
-        ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val canvasW = size.width
-                val canvasH = size.height
-
-                // Draw each of the 26 QWERTY keys
-                for ((ch, geom) in keyGeometries) {
-                    val profile = spatialProfiles[ch]
-                    val isHovered = hoveredKey == ch
-                    val keyPadX = canvasW * 0.006f
-                    val keyPadY = canvasH * 0.022f
-                    val left = (geom.canonicalX - geom.width / 2f) * canvasW + keyPadX
-                    val top = (geom.canonicalY - geom.height / 2f) * canvasH + keyPadY
-                    val kw = geom.width * canvasW - keyPadX * 2f
-                    val kh = geom.height * canvasH - keyPadY * 2f
-
-                    // Keycap shadow & surface
-                    drawRoundRect(
-                        color = Color.Black.copy(alpha = 0.45f),
-                        topLeft = Offset(left, top + 3f),
-                        size = Size(kw, kh),
-                        cornerRadius = CornerRadius(14f, 14f)
-                    )
-                    drawRoundRect(
-                        color = if (isHovered) TelemetryCyan.copy(alpha = 0.26f) else FutoKeyCapSurface,
-                        topLeft = Offset(left, top),
-                        size = Size(kw, kh),
-                        cornerRadius = CornerRadius(14f, 14f)
-                    )
-                    drawRoundRect(
-                        color = if (isHovered) TelemetryCyan else FutoKeyCapBorder,
-                        topLeft = Offset(left, top),
-                        size = Size(kw, kh),
-                        cornerRadius = CornerRadius(14f, 14f),
-                        style = Stroke(width = if (isHovered) 3.5f else 1.5f)
-                    )
-
-                    // Key character label
-                    val displayChar = if (isShiftActive) ch.uppercase() else ch.toString()
-                    val textLayout = textMeasurer.measure(
-                        text = displayChar,
-                        style = TextStyle(
-                            fontFamily = SpaceGroteskFamily,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 17.sp,
-                            color = if (isHovered) TelemetryCyan else TextPrimary
-                        )
-                    )
-                    drawText(
-                        textLayoutResult = textLayout,
-                        topLeft = Offset(
-                            x = geom.canonicalX * canvasW - textLayout.size.width / 2f,
-                            y = geom.canonicalY * canvasH - textLayout.size.height / 2f - 2f
-                        )
-                    )
-
-                    // Optional Spatial Drift Overlay: shows learned receptor center & shift vector
-                    if (showDriftOverlay && profile != null && profile.hitCount > 0) {
-                        val cx = geom.canonicalX * canvasW
-                        val cy = geom.canonicalY * canvasH
-                        // Amplify visual vector by 2.2x so subtle thumb offsets are easy to inspect
-                        val shiftedX = (geom.canonicalX + profile.driftX * 2.2f) * canvasW
-                        val shiftedY = (geom.canonicalY + profile.driftY * 2.2f) * canvasH
-
-                        drawLine(
-                            color = AdaptiveAmber.copy(alpha = 0.85f),
-                            start = Offset(cx, cy),
-                            end = Offset(shiftedX, shiftedY),
-                            strokeWidth = 3f,
-                            cap = StrokeCap.Round
-                        )
-                        drawCircle(
-                            color = AdaptiveAmber,
-                            radius = 5.5f,
-                            center = Offset(shiftedX, shiftedY)
-                        )
-                        drawCircle(
-                            color = AdaptiveAmber.copy(alpha = 0.18f),
-                            radius = 16f * profile.radiusScale,
-                            center = Offset(shiftedX, shiftedY)
+        // 2. Optional Dedicated Number Row (1 2 3 4 5 6 7 8 9 0)
+        if (showNumberRow && layoutMode == KeyboardLayoutMode.ALPHABET) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(36.dp)
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                val digits = listOf('1', '2', '3', '4', '5', '6', '7', '8', '9', '0')
+                digits.forEach { d ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(FutoKeyCapSpecial)
+                            .border(1.dp, FutoKeyCapBorder.copy(alpha = 0.7f), RoundedCornerShape(6.dp))
+                            .clickable {
+                                view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                onKeyTap(d)
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = d.toString(),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold
                         )
                     }
-                }
-
-                // Draw Ghost Overlay of Last Completed Gesture + Inflection Anchors when Drift HUD is active
-                if (!isSwiping && showDriftOverlay && lastDecodeResult != null && lastDecodeResult.smoothedPath.size > 1) {
-                    val ghostPath = Path()
-                    val pts = lastDecodeResult.smoothedPath
-                    ghostPath.moveTo(pts.first().x * canvasW, pts.first().y * canvasH)
-                    for (i in 1 until pts.size) {
-                        ghostPath.lineTo(pts[i].x * canvasW, pts[i].y * canvasH)
-                    }
-                    drawPath(
-                        path = ghostPath,
-                        color = TelemetryCyan.copy(alpha = 0.35f),
-                        style = Stroke(width = 5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                    )
-                    for (node in lastDecodeResult.inflectionNodes) {
-                        val nodeColor = when (node.nodeType) {
-                            InflectionNode.NodeType.START -> NeuralEmerald
-                            InflectionNode.NodeType.CORNER -> AdaptiveAmber
-                            InflectionNode.NodeType.DWELL_LOOP -> Color(0xFFE040FB)
-                            InflectionNode.NodeType.END -> TelemetryCyan
-                        }
-                        drawCircle(
-                            color = nodeColor,
-                            radius = 7f,
-                            center = Offset(node.x * canvasW, node.y * canvasH)
-                        )
-                    }
-                }
-
-                // Draw Active Live Gesture Swipe Trail (Bezier smoothed glowing ribbon)
-                if (activeTrail.size >= 2) {
-                    val trailPath = Path()
-                    val first = activeTrail.first()
-                    trailPath.moveTo(first.x * canvasW, first.y * canvasH)
-                    for (i in 1 until activeTrail.size) {
-                        val prev = activeTrail[i - 1]
-                        val curr = activeTrail[i]
-                        val midX = (prev.x + curr.x) * 0.5f * canvasW
-                        val midY = (prev.y + curr.y) * 0.5f * canvasH
-                        trailPath.quadraticTo(
-                            prev.x * canvasW,
-                            prev.y * canvasH,
-                            midX,
-                            midY
-                        )
-                    }
-                    val last = activeTrail.last()
-                    trailPath.lineTo(last.x * canvasW, last.y * canvasH)
-
-                    // Outer glow
-                    drawPath(
-                        path = trailPath,
-                        brush = Brush.linearGradient(
-                            colors = listOf(
-                                TelemetryCyan.copy(alpha = 0.20f),
-                                AdaptiveAmber.copy(alpha = 0.38f),
-                                TelemetryCyan.copy(alpha = 0.50f)
-                            )
-                        ),
-                        style = Stroke(width = 18f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                    )
-                    // Core laser trail
-                    drawPath(
-                        path = trailPath,
-                        brush = Brush.linearGradient(
-                            colors = listOf(TelemetryCyan, AdaptiveAmber, TelemetryCyan)
-                        ),
-                        style = Stroke(width = 6.5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                    )
-                    // Pointer head glow
-                    drawCircle(
-                        color = TelemetryCyan,
-                        radius = 10f,
-                        center = Offset(last.x * canvasW, last.y * canvasH)
-                    )
                 }
             }
         }
 
-        // 3. Bottom Utility Row (Shift, Drift HUD Toggle, Spacebar, Punctuation, Backspace, Enter)
+        // 3. Main Keyboard Body (Alphabet Gesture Canvas OR Symbols Grid)
+        when (layoutMode) {
+            KeyboardLayoutMode.ALPHABET -> {
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(166.dp)
+                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                        .testTag("gesture_letter_canvas")
+                        .semantics { contentDescription = "QWERTY keyboard and gesture typing area" }
+                        .pointerInput(keyGeometries, spatialProfiles, shiftState) {
+                            val widthPx = size.width.toFloat().coerceAtLeast(1f)
+                            val heightPx = size.height.toFloat().coerceAtLeast(1f)
+
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                activeTrail.clear()
+                                isSwipingGesture = false
+                                liveSwipePreviewWord = null
+
+                                val startX = (down.position.x / widthPx).coerceIn(0.01f, 0.99f)
+                                val startY = (down.position.y / heightPx).coerceIn(0.01f, 0.99f)
+                                val startMs = SystemClock.uptimeMillis()
+
+                                activeTrail.add(RawTouchPoint(startX, startY, startMs))
+                                val initialKey = findClosestKey(startX, startY, keyGeometries, spatialProfiles)
+                                hoveredKey = initialKey
+                                view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+
+                                var totalPathDistance = 0f
+                                var lastSampleX = startX
+                                var lastSampleY = startY
+
+                                do {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.firstOrNull() ?: break
+                                    if (change.pressed) {
+                                        val cx = (change.position.x / widthPx).coerceIn(0.01f, 0.99f)
+                                        val cy = (change.position.y / heightPx).coerceIn(0.01f, 0.99f)
+                                        val nowMs = SystemClock.uptimeMillis()
+                                        val stepDist = hypot(cx - lastSampleX, cy - lastSampleY)
+
+                                        if (stepDist >= 0.006f) {
+                                            totalPathDistance += stepDist
+                                            lastSampleX = cx
+                                            lastSampleY = cy
+                                            activeTrail.add(RawTouchPoint(cx, cy, nowMs))
+
+                                            if (totalPathDistance >= 0.075f) {
+                                                isSwipingGesture = true
+                                                if (activeTrail.size % 4 == 0 && onGesturePreview != null) {
+                                                    liveSwipePreviewWord = onGesturePreview(activeTrail.toList())
+                                                }
+                                            }
+                                        }
+                                        hoveredKey = findClosestKey(cx, cy, keyGeometries, spatialProfiles)
+                                        change.consume()
+                                    }
+                                } while (event.changes.any { it.pressed })
+
+                                val holdDurationMs = SystemClock.uptimeMillis() - startMs
+                                val finishedPoints = activeTrail.toList()
+                                val finalKey = hoveredKey ?: initialKey
+
+                                isSwipingGesture = false
+                                hoveredKey = null
+                                liveSwipePreviewWord = null
+                                activeTrail.clear()
+
+                                // Distinguish Tap vs. Long-Press Number vs. Continuous Swipe Gesture!
+                                if (totalPathDistance < 0.075f) {
+                                    val altDigit = topRowNumberHints[finalKey]
+                                    if (holdDurationMs >= 360L && altDigit != null) {
+                                        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                                        onKeyTap(altDigit)
+                                    } else {
+                                        val outChar = if (shiftState != ShiftState.OFF) {
+                                            finalKey.uppercaseChar()
+                                        } else {
+                                            finalKey
+                                        }
+                                        onKeyTap(outChar)
+                                    }
+                                } else if (finishedPoints.size >= 3) {
+                                    onGestureCompleted(finishedPoints)
+                                }
+                            }
+                        }
+                ) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val canvasW = size.width
+                        val canvasH = size.height
+
+                        for ((ch, geom) in keyGeometries) {
+                            val profile = spatialProfiles[ch]
+                            val isHovered = hoveredKey == ch
+                            val keyPadX = canvasW * 0.0055f
+                            val keyPadY = canvasH * 0.022f
+                            val left = (geom.canonicalX - geom.width / 2f) * canvasW + keyPadX
+                            val top = (geom.canonicalY - geom.height / 2f) * canvasH + keyPadY
+                            val kw = geom.width * canvasW - keyPadX * 2f
+                            val kh = geom.height * canvasH - keyPadY * 2f
+
+                            // Keycap shadow & surface
+                            drawRoundRect(
+                                color = Color.Black.copy(alpha = 0.45f),
+                                topLeft = Offset(left, top + 3f),
+                                size = Size(kw, kh),
+                                cornerRadius = CornerRadius(14f, 14f)
+                            )
+                            drawRoundRect(
+                                color = if (isHovered) TelemetryCyan.copy(alpha = 0.28f) else FutoKeyCapSurface,
+                                topLeft = Offset(left, top),
+                                size = Size(kw, kh),
+                                cornerRadius = CornerRadius(14f, 14f)
+                            )
+                            drawRoundRect(
+                                color = if (isHovered) TelemetryCyan else FutoKeyCapBorder,
+                                topLeft = Offset(left, top),
+                                size = Size(kw, kh),
+                                cornerRadius = CornerRadius(14f, 14f),
+                                style = Stroke(width = if (isHovered) 3.5f else 1.5f)
+                            )
+
+                            // Secondary number hint in top-right corner of Q..P
+                            val hintDigit = topRowNumberHints[ch]
+                            if (hintDigit != null) {
+                                val hintLayout = textMeasurer.measure(
+                                    text = hintDigit.toString(),
+                                    style = TextStyle(
+                                        fontFamily = JetBrainsMonoFamily,
+                                        fontSize = 9.sp,
+                                        color = TextMuted
+                                    )
+                                )
+                                drawText(
+                                    textLayoutResult = hintLayout,
+                                    topLeft = Offset(
+                                        x = left + kw - hintLayout.size.width - 5f,
+                                        y = top + 3f
+                                    )
+                                )
+                            }
+
+                            // Main character label
+                            val displayChar = if (shiftState != ShiftState.OFF) ch.uppercase() else ch.toString()
+                            val textLayout = textMeasurer.measure(
+                                text = displayChar,
+                                style = TextStyle(
+                                    fontFamily = SpaceGroteskFamily,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 18.sp,
+                                    color = if (isHovered) TelemetryCyan else TextPrimary
+                                )
+                            )
+                            drawText(
+                                textLayoutResult = textLayout,
+                                topLeft = Offset(
+                                    x = geom.canonicalX * canvasW - textLayout.size.width / 2f,
+                                    y = geom.canonicalY * canvasH - textLayout.size.height / 2f
+                                )
+                            )
+
+                            // Learned Spatial Drift Vector Overlay on Keycaps
+                            if (showDriftOverlay && profile != null && profile.hitCount > 0) {
+                                val cx = geom.canonicalX * canvasW
+                                val cy = geom.canonicalY * canvasH
+                                val shiftedX = (geom.canonicalX + profile.driftX * 2.2f) * canvasW
+                                val shiftedY = (geom.canonicalY + profile.driftY * 2.2f) * canvasH
+
+                                drawLine(
+                                    color = AdaptiveAmber.copy(alpha = 0.85f),
+                                    start = Offset(cx, cy),
+                                    end = Offset(shiftedX, shiftedY),
+                                    strokeWidth = 3f,
+                                    cap = StrokeCap.Round
+                                )
+                                drawCircle(
+                                    color = AdaptiveAmber,
+                                    radius = 5f,
+                                    center = Offset(shiftedX, shiftedY)
+                                )
+                            }
+                        }
+
+                        // Key press popup preview when tapping a single key
+                        val currentHover = hoveredKey
+                        if (currentHover != null && !isSwipingGesture) {
+                            val geom = keyGeometries[currentHover]
+                            if (geom != null) {
+                                val popW = geom.width * canvasW * 1.15f
+                                val popH = geom.height * canvasH * 1.1f
+                                val popLeft = (geom.canonicalX * canvasW - popW / 2f).coerceIn(4f, canvasW - popW - 4f)
+                                val popTop = ((geom.canonicalY - geom.height * 1.25f) * canvasH).coerceAtLeast(2f)
+
+                                drawRoundRect(
+                                    color = FutoSlateBg,
+                                    topLeft = Offset(popLeft, popTop),
+                                    size = Size(popW, popH),
+                                    cornerRadius = CornerRadius(16f, 16f)
+                                )
+                                drawRoundRect(
+                                    color = TelemetryCyan,
+                                    topLeft = Offset(popLeft, popTop),
+                                    size = Size(popW, popH),
+                                    cornerRadius = CornerRadius(16f, 16f),
+                                    style = Stroke(width = 3f)
+                                )
+                                val popChar = if (shiftState != ShiftState.OFF) currentHover.uppercase() else currentHover.toString()
+                                val popText = textMeasurer.measure(
+                                    text = popChar,
+                                    style = TextStyle(
+                                        fontFamily = SpaceGroteskFamily,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 22.sp,
+                                        color = TelemetryCyan
+                                    )
+                                )
+                                drawText(
+                                    textLayoutResult = popText,
+                                    topLeft = Offset(
+                                        popLeft + popW / 2f - popText.size.width / 2f,
+                                        popTop + popH / 2f - popText.size.height / 2f
+                                    )
+                                )
+                            }
+                        }
+
+                        // Active Bezier Swipe Trail
+                        if (isSwipingGesture && activeTrail.size >= 2) {
+                            val trailPath = Path()
+                            val first = activeTrail.first()
+                            trailPath.moveTo(first.x * canvasW, first.y * canvasH)
+                            for (i in 1 until activeTrail.size) {
+                                val prev = activeTrail[i - 1]
+                                val curr = activeTrail[i]
+                                val midX = (prev.x + curr.x) * 0.5f * canvasW
+                                val midY = (prev.y + curr.y) * 0.5f * canvasH
+                                trailPath.quadraticTo(
+                                    prev.x * canvasW,
+                                    prev.y * canvasH,
+                                    midX,
+                                    midY
+                                )
+                            }
+                            val last = activeTrail.last()
+                            trailPath.lineTo(last.x * canvasW, last.y * canvasH)
+
+                            drawPath(
+                                path = trailPath,
+                                brush = Brush.linearGradient(
+                                    colors = listOf(
+                                        TelemetryCyan.copy(alpha = 0.22f),
+                                        AdaptiveAmber.copy(alpha = 0.40f),
+                                        TelemetryCyan.copy(alpha = 0.52f)
+                                    )
+                                ),
+                                style = Stroke(width = 18f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                            )
+                            drawPath(
+                                path = trailPath,
+                                brush = Brush.linearGradient(
+                                    colors = listOf(TelemetryCyan, AdaptiveAmber, TelemetryCyan)
+                                ),
+                                style = Stroke(width = 6.5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                            )
+                            drawCircle(
+                                color = TelemetryCyan,
+                                radius = 10f,
+                                center = Offset(last.x * canvasW, last.y * canvasH)
+                            )
+                        }
+                    }
+                }
+            }
+
+            KeyboardLayoutMode.SYMBOLS, KeyboardLayoutMode.SYMBOLS_EXT -> {
+                SymbolsKeyboardGrid(
+                    isExtended = layoutMode == KeyboardLayoutMode.SYMBOLS_EXT,
+                    onSymbolTap = { sym ->
+                        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        onKeyTap(sym)
+                    },
+                    onToggleExtended = {
+                        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        layoutMode = if (layoutMode == KeyboardLayoutMode.SYMBOLS) {
+                            KeyboardLayoutMode.SYMBOLS_EXT
+                        } else {
+                            KeyboardLayoutMode.SYMBOLS
+                        }
+                    }
+                )
+            }
+        }
+
+        // 4. Bottom Action Row (?123/ABC, Shift, Comma, Spacebar, Period, Backspace, IME Action/Enter)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(48.dp)
-                .padding(horizontal = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                .padding(horizontal = 5.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Shift key
-            UtilityKeyButton(
-                modifier = Modifier
-                    .weight(1.1f)
-                    .testTag("key_shift"),
-                isActive = isShiftActive,
-                activeColor = TelemetryCyan,
-                contentDesc = "Shift key",
-                onClick = {
-                    view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    onToggleShift()
-                }
-            ) {
-                Icon(
-                    imageVector = Icons.Default.KeyboardCapslock,
-                    contentDescription = "Toggle Shift",
-                    tint = if (isShiftActive) TelemetryCyan else TextPrimary,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-
-            // Spatial Drift HUD overlay toggle
+            // ?123 / ABC mode switch key
             UtilityKeyButton(
                 modifier = Modifier
                     .weight(1.25f)
-                    .testTag("key_drift_hud"),
-                isActive = showDriftOverlay,
+                    .testTag("key_mode_switch"),
+                isActive = layoutMode != KeyboardLayoutMode.ALPHABET,
                 activeColor = AdaptiveAmber,
-                contentDesc = "Toggle Spatial Drift Overlay",
+                contentDesc = "Switch symbols or letters",
                 onClick = {
                     view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    onToggleDriftOverlay()
+                    layoutMode = if (layoutMode == KeyboardLayoutMode.ALPHABET) {
+                        KeyboardLayoutMode.SYMBOLS
+                    } else {
+                        KeyboardLayoutMode.ALPHABET
+                    }
                 }
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                Text(
+                    text = if (layoutMode == KeyboardLayoutMode.ALPHABET) "?123" else "ABC",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (layoutMode != KeyboardLayoutMode.ALPHABET) AdaptiveAmber else TextPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            // Shift / Caps Lock key (only in Alphabet mode)
+            if (layoutMode == KeyboardLayoutMode.ALPHABET) {
+                UtilityKeyButton(
+                    modifier = Modifier
+                        .weight(1.1f)
+                        .testTag("key_shift"),
+                    isActive = shiftState != ShiftState.OFF,
+                    activeColor = if (shiftState == ShiftState.CAPS_LOCK) AdaptiveAmber else TelemetryCyan,
+                    contentDesc = "Shift key",
+                    onClick = {
+                        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        onToggleShift()
+                    }
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.MyLocation,
-                        contentDescription = "Drift HUD",
-                        tint = if (showDriftOverlay) AdaptiveAmber else TextSecondary,
-                        modifier = Modifier.size(15.dp)
-                    )
-                    Text(
-                        text = "DRIFT",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (showDriftOverlay) AdaptiveAmber else TextSecondary,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.KeyboardCapslock,
+                            contentDescription = "Shift",
+                            tint = when (shiftState) {
+                                ShiftState.CAPS_LOCK -> AdaptiveAmber
+                                ShiftState.ONE_SHOT -> TelemetryCyan
+                                ShiftState.OFF -> TextPrimary
+                            },
+                            modifier = Modifier.size(19.dp)
+                        )
+                        if (shiftState == ShiftState.CAPS_LOCK) {
+                            Box(
+                                modifier = Modifier
+                                    .size(5.dp)
+                                    .clip(CircleShape)
+                                    .background(AdaptiveAmber)
+                            )
+                        }
+                    }
                 }
             }
 
-            // Spacebar with FUTO Adaptive status pill
+            // Comma key
             UtilityKeyButton(
                 modifier = Modifier
-                    .weight(3.6f)
+                    .weight(0.85f)
+                    .testTag("key_comma"),
+                isActive = false,
+                activeColor = TelemetryCyan,
+                contentDesc = "Comma key",
+                onClick = {
+                    view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    onPunctuation(",")
+                }
+            ) {
+                Text(
+                    text = ",",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            // Spacebar
+            UtilityKeyButton(
+                modifier = Modifier
+                    .weight(3.4f)
                     .testTag("key_space"),
                 isActive = false,
                 activeColor = TelemetryCyan,
@@ -437,29 +625,23 @@ fun FutoGestureKeyboardView(
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(7.dp)
+                            .size(6.dp)
                             .clip(CircleShape)
                             .background(NeuralEmerald)
                     )
                     Text(
-                        text = "FUTO ADAPTIVE",
+                        text = if (composingWord.isNotEmpty()) "SPACE • \"$composingWord\"" else "English (FUTO Adaptive)",
                         style = MaterialTheme.typography.labelSmall,
                         color = TextSecondary,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Icon(
-                        imageVector = Icons.Default.SpaceBar,
-                        contentDescription = null,
-                        tint = TextMuted,
-                        modifier = Modifier.size(16.dp)
+                        fontWeight = FontWeight.Medium
                     )
                 }
             }
 
-            // Period / Punctuation key
+            // Period key
             UtilityKeyButton(
                 modifier = Modifier
-                    .weight(0.9f)
+                    .weight(0.85f)
                     .testTag("key_period"),
                 isActive = false,
                 activeColor = TelemetryCyan,
@@ -498,167 +680,290 @@ fun FutoGestureKeyboardView(
                 )
             }
 
-            // Enter key
+            // Context-aware IME Action / Enter key
             UtilityKeyButton(
                 modifier = Modifier
-                    .weight(1.15f)
+                    .weight(1.25f)
                     .testTag("key_enter"),
                 isActive = true,
                 activeColor = TelemetryCyan,
-                contentDesc = "Enter key",
+                contentDesc = "Enter or Action key",
                 onClick = {
                     view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    onEnter()
+                    onEnterAction()
                 }
             ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.KeyboardReturn,
-                    contentDescription = "Enter",
-                    tint = TelemetryCyan,
-                    modifier = Modifier.size(19.dp)
-                )
+                when (imeActionType) {
+                    ImeActionType.SEARCH -> Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "Search",
+                        tint = TelemetryCyan,
+                        modifier = Modifier.size(19.dp)
+                    )
+                    ImeActionType.SEND -> Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "Send",
+                        tint = TelemetryCyan,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    ImeActionType.DONE -> Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = "Done",
+                        tint = TelemetryCyan,
+                        modifier = Modifier.size(19.dp)
+                    )
+                    ImeActionType.GO, ImeActionType.NEXT -> Text(
+                        text = if (imeActionType == ImeActionType.GO) "GO" else "NEXT",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TelemetryCyan,
+                        fontWeight = FontWeight.Bold
+                    )
+                    ImeActionType.RETURN -> Icon(
+                        imageVector = Icons.AutoMirrored.Filled.KeyboardReturn,
+                        contentDescription = "Enter",
+                        tint = TelemetryCyan,
+                        modifier = Modifier.size(19.dp)
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun CandidateSuggestionBar(
-    decodeResult: GestureDecodeResult?,
-    hoveredKey: Char?,
+private fun SymbolsKeyboardGrid(
+    isExtended: Boolean,
+    onSymbolTap: (Char) -> Unit,
+    onToggleExtended: () -> Unit
+) {
+    val rows = if (!isExtended) {
+        listOf(
+            listOf('1', '2', '3', '4', '5', '6', '7', '8', '9', '0'),
+            listOf('@', '#', '$', '_', '&', '-', '+', '(', ')', '/'),
+            listOf('*', '"', '\'', ':', ';', '!', '?', '%', '=', '~')
+        )
+    } else {
+        listOf(
+            listOf('~', '`', '|', '•', '√', 'π', '÷', '×', '§', 'Δ'),
+            listOf('£', '¢', '€', '¥', '^', '°', '=', '{', '}', '\\'),
+            listOf('%', '©', '®', '™', '✓', '[', ']', '<', '>', '…')
+        )
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(166.dp)
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        rows.forEachIndexed { rowIdx, rowChars ->
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                if (rowIdx == 2) {
+                    // =\< toggle key on row 3 left
+                    Box(
+                        modifier = Modifier
+                            .weight(1.3f)
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(FutoKeyCapSpecial)
+                            .border(1.dp, AdaptiveAmber.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                            .clickable(onClick = onToggleExtended),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (!isExtended) "=\\<" else "?123",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = AdaptiveAmber,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+                rowChars.forEach { sym ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(FutoKeyCapSurface)
+                            .border(1.dp, FutoKeyCapBorder, RoundedCornerShape(8.dp))
+                            .clickable { onSymbolTap(sym) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = sym.toString(),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CandidateSuggestionToolbar(
+    candidates: List<GestureCandidate>,
+    composingWord: String,
+    wasPromotedByAdaptation: Boolean,
     isSwiping: Boolean,
-    activePointCount: Int,
+    liveSwipePreviewWord: String?,
+    hoveredKey: Char?,
+    showDriftOverlay: Boolean,
+    onToggleDriftOverlay: () -> Unit,
+    onOpenSettings: (() -> Unit)?,
     onCandidateClick: (GestureCandidate, Int) -> Unit
 ) {
     Surface(
         color = FutoSlateBg,
         modifier = Modifier
             .fillMaxWidth()
-            .height(50.dp)
+            .height(46.dp)
             .testTag("candidate_suggestion_bar")
     ) {
-        if (isSwiping && hoveredKey != null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(28.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(TelemetryCyan.copy(alpha = 0.2f))
-                            .border(1.dp, TelemetryCyan, RoundedCornerShape(8.dp)),
-                        contentAlignment = Alignment.Center
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            // Left / Center: Live Gesture Preview OR Candidate Suggestion Strip
+            Box(modifier = Modifier.weight(1f)) {
+                if (isSwiping) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(TelemetryCyan.copy(alpha = 0.2f))
+                                .border(1.dp, TelemetryCyan, RoundedCornerShape(8.dp))
+                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = liveSwipePreviewWord ?: hoveredKey?.uppercase() ?: "…",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = TelemetryCyan,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                         Text(
-                            text = hoveredKey.uppercase(),
-                            style = MaterialTheme.typography.titleMedium,
-                            color = TelemetryCyan,
-                            fontWeight = FontWeight.Bold
+                            text = "Gesture decoding…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextSecondary
                         )
                     }
-                    Text(
-                        text = "Capturing gesture trajectory ($activePointCount samples)...",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = TextSecondary
-                    )
-                }
-                Text(
-                    text = "DTW + DRIFT ACTIVE",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = AdaptiveAmber
-                )
-            }
-        } else if (decodeResult != null && decodeResult.candidates.isNotEmpty()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 8.dp, vertical = 5.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                decodeResult.candidates.take(5).forEachIndexed { idx, candidate ->
-                    val isTop = idx == 0
-                    val isPromoted = isTop && decodeResult.wasPromotedByAdaptation
-                    val borderColor = when {
-                        isPromoted -> AdaptiveAmber
-                        isTop -> TelemetryCyan
-                        else -> FutoKeyCapBorder
-                    }
-                    val bgColor = when {
-                        isPromoted -> AdaptiveAmber.copy(alpha = 0.16f)
-                        isTop -> TelemetryCyan.copy(alpha = 0.15f)
-                        else -> FutoKeyCapSurface.copy(alpha = 0.8f)
-                    }
-
+                } else if (candidates.isNotEmpty()) {
                     Row(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(bgColor)
-                            .border(1.dp, borderColor, RoundedCornerShape(10.dp))
-                            .clickable { onCandidateClick(candidate, idx) }
-                            .padding(horizontal = 10.dp, vertical = 4.dp)
-                            .testTag("candidate_chip_$idx"),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            .fillMaxSize()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        if (isPromoted) {
-                            Icon(
-                                imageVector = Icons.Default.AutoAwesome,
-                                contentDescription = "Promoted by style learning",
-                                tint = AdaptiveAmber,
-                                modifier = Modifier.size(14.dp)
-                            )
-                        }
-                        Text(
-                            text = candidate.word,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = TextPrimary,
-                            fontWeight = if (isTop) FontWeight.Bold else FontWeight.Medium
-                        )
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(
-                                text = "${candidate.adaptiveScore.toInt()}%",
-                                style = TextStyle(
-                                    fontFamily = JetBrainsMonoFamily,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isPromoted) AdaptiveAmber else if (isTop) TelemetryCyan else TextSecondary
+                        candidates.take(5).forEachIndexed { idx, candidate ->
+                            val isTop = idx == 0
+                            val isPromoted = isTop && wasPromotedByAdaptation
+                            val borderColor = when {
+                                isPromoted -> AdaptiveAmber
+                                isTop -> TelemetryCyan
+                                else -> FutoKeyCapBorder
+                            }
+                            val bgColor = when {
+                                isPromoted -> AdaptiveAmber.copy(alpha = 0.16f)
+                                isTop -> TelemetryCyan.copy(alpha = 0.14f)
+                                else -> FutoKeyCapSurface.copy(alpha = 0.8f)
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(bgColor)
+                                    .border(1.dp, borderColor, RoundedCornerShape(8.dp))
+                                    .clickable { onCandidateClick(candidate, idx) }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                                    .testTag("candidate_chip_$idx"),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                if (isPromoted) {
+                                    Icon(
+                                        imageVector = Icons.Default.AutoAwesome,
+                                        contentDescription = "Adapted style prediction",
+                                        tint = AdaptiveAmber,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                                Text(
+                                    text = candidate.word,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = TextPrimary,
+                                    fontWeight = if (isTop) FontWeight.Bold else FontWeight.Medium
                                 )
-                            )
-                            Text(
-                                text = candidate.explanationBadge,
-                                style = TextStyle(
-                                    fontFamily = JetBrainsMonoFamily,
-                                    fontSize = 8.sp,
-                                    color = TextMuted
+                                Text(
+                                    text = candidate.explanationBadge,
+                                    style = TextStyle(
+                                        fontFamily = JetBrainsMonoFamily,
+                                        fontSize = 8.sp,
+                                        color = if (isPromoted) AdaptiveAmber else TextMuted
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
+                } else {
+                    Text(
+                        text = if (composingWord.isNotEmpty()) "Typing: $composingWord" else "FUTO Adaptive Keyboard",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = TextSecondary,
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    )
                 }
             }
-        } else {
+
+            // Right utility icons: Learned Key Drift Vectors Toggle + Settings Icon
             Row(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                Text(
-                    text = "Swipe across keys to gesture-type • Tap alternate chips to train your style",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = TextSecondary
-                )
+                IconButton(
+                    onClick = onToggleDriftOverlay,
+                    modifier = Modifier
+                        .size(34.dp)
+                        .testTag("key_drift_hud")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MyLocation,
+                        contentDescription = "Toggle Learned Key Drift Vectors",
+                        tint = if (showDriftOverlay) AdaptiveAmber else TextMuted,
+                        modifier = Modifier.size(17.dp)
+                    )
+                }
+                if (onOpenSettings != null) {
+                    IconButton(
+                        onClick = onOpenSettings,
+                        modifier = Modifier
+                            .size(34.dp)
+                            .testTag("ime_open_settings")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Keyboard Settings",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+                }
             }
         }
     }

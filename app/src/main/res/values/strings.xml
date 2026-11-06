@@ -1,11 +1,10 @@
 <resources>
-    <string name="app_name">FUTO Gesture Studio</string>
-    <string name="ime_service_label">FUTO Adaptive Gesture Keyboard</string>
-    <string name="tab_sandbox">Sandbox</string>
-    <string name="tab_telemetry">Decoder Lab</string>
-    <string name="tab_adaptation">Style Profile</string>
-    <string name="tab_lexicon">Lexicon &amp; N-Grams</string>
+    <string name="app_name">FUTO Keyboard</string>
+    <string name="ime_service_label">FUTO Adaptive Keyboard</string>
+    <string name="tab_sandbox">Keyboard</string>
+    <string name="tab_adaptation">Style Tuning</string>
+    <string name="tab_lexicon">Dictionary</string>
+    <string name="tab_telemetry">Diagnostics</string>
     <string name="clear_text">Clear text</string>
-    <string name="load_prompt">Load training phrase</string>
     <string name="toggle_heatmap_overlay">Toggle spatial offset overlay</string>
 </resources>

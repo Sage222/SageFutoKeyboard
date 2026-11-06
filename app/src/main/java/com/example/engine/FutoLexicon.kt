@@ -1,133 +1,258 @@
 package com.example.engine
 
 /**
- * Built-in core vocabulary and calibration drills modeled after FUTO LatinIME dictionary weights.
+ * Comprehensive built-in English lexicon and starter bigrams for the FUTO Adaptive Keyboard IME.
+ * Words are paired with unigram log-frequency weights (50..255) modeled on LatinIME dictionaries.
  */
 object FutoLexicon {
 
-    data class CalibrationDrill(
-        val id: String,
-        val title: String,
-        val focusDescription: String,
-        val targetPhrase: String,
-        val focusKeys: List<Char>
-    )
+    val defaultWordsWithFreq: Map<String, Int> by lazy {
+        val map = HashMap<String, Int>(2400)
 
-    val calibrationDrills: List<CalibrationDrill> = listOf(
-        CalibrationDrill(
-            id = "thumb_arc_core",
-            title = "Thumb Arc & Corner Rounding",
-            focusDescription = "Calibrates outer-row reach (Q, P, Z, M) and sharp inner-row inflections.",
-            targetPhrase = "the quick brown fox jumps over the lazy dog",
-            focusKeys = listOf('q', 'p', 'z', 'm', 'x')
-        ),
-        CalibrationDrill(
-            id = "ambiguous_clusters",
-            title = "Ambiguous Trajectory Disambiguation",
-            focusDescription = "Trains N-gram context and inflection timing on overlapping swipe paths (from/form, their/there).",
-            targetPhrase = "their new form came from there right at night",
-            focusKeys = listOf('f', 'r', 'o', 'm', 't', 'h', 'e')
-        ),
-        CalibrationDrill(
-            id = "double_letter_dwell",
-            title = "Double-Letter Dwell & Loop Recognition",
-            focusDescription = "Teaches the decoder your natural dwell speed or micro-loop on repeated letters.",
-            targetPhrase = "hello feel free to keep good coffee and speed",
-            focusKeys = listOf('l', 'e', 'o', 'f')
-        ),
-        CalibrationDrill(
-            id = "futo_privacy_manifesto",
-            title = "FUTO Adaptive Typing Benchmark",
-            focusDescription = "Tests multi-syllable technical words and personal writing rhythm.",
-            targetPhrase = "futo adaptive keyboard learns your gesture style locally",
-            focusKeys = listOf('f', 'u', 't', 'o', 'g', 's', 'y')
+        // Tier 1: Ultra-high frequency core words (230..255)
+        val tier1 = listOf(
+            "the", "be", "to", "of", "and", "a", "in", "that", "have", "i",
+            "it", "for", "not", "on", "with", "he", "as", "you", "do", "at",
+            "this", "but", "his", "by", "from", "they", "we", "say", "her", "she",
+            "or", "an", "will", "my", "one", "all", "would", "there", "their", "what",
+            "so", "up", "out", "if", "about", "who", "get", "which", "go", "me",
+            "when", "make", "can", "like", "time", "no", "just", "him", "know", "take",
+            "people", "into", "year", "your", "good", "some", "could", "them", "see", "other",
+            "than", "then", "now", "look", "only", "come", "its", "over", "think", "also",
+            "back", "after", "use", "two", "how", "our", "work", "first", "well", "way",
+            "even", "new", "want", "because", "any", "these", "give", "day", "most", "us",
+            "is", "are", "was", "were", "been", "has", "had", "did", "does", "am"
         )
-    )
+        tier1.forEachIndexed { idx, w -> map[w] = (255 - idx / 4).coerceAtLeast(230) }
 
-    // Core dictionary with base unigram frequency ratings (50..250)
-    val defaultWordsWithFreq: Map<String, Int> = mapOf(
-        "the" to 250, "be" to 240, "to" to 245, "of" to 240, "and" to 245,
-        "a" to 235, "in" to 240, "that" to 235, "have" to 230, "i" to 235,
-        "it" to 235, "for" to 230, "not" to 230, "on" to 228, "with" to 228,
-        "he" to 220, "as" to 220, "you" to 235, "do" to 225, "at" to 222,
-        "this" to 228, "but" to 222, "his" to 210, "by" to 215, "from" to 225,
-        "they" to 222, "we" to 225, "say" to 210, "her" to 208, "she" to 210,
-        "or" to 218, "an" to 215, "will" to 220, "my" to 224, "one" to 218,
-        "all" to 220, "would" to 215, "there" to 220, "their" to 218, "what" to 222,
-        "so" to 218, "up" to 215, "out" to 218, "if" to 215, "about" to 215,
-        "who" to 210, "get" to 218, "which" to 210, "go" to 218, "me" to 220,
-        "when" to 215, "make" to 218, "can" to 224, "like" to 220, "time" to 220,
-        "no" to 215, "just" to 220, "him" to 205, "know" to 218, "take" to 215,
-        "people" to 212, "into" to 212, "year" to 205, "your" to 225, "good" to 220,
-        "some" to 215, "could" to 212, "them" to 212, "see" to 218, "other" to 212,
-        "than" to 210, "then" to 215, "now" to 220, "look" to 215, "only" to 214,
-        "come" to 215, "its" to 210, "over" to 215, "think" to 216, "also" to 212,
-        "back" to 216, "after" to 212, "use" to 216, "two" to 208, "how" to 218,
-        "our" to 215, "work" to 220, "first" to 215, "well" to 216, "way" to 216,
-        "even" to 212, "new" to 218, "want" to 218, "because" to 212, "any" to 212,
-        "these" to 210, "give" to 212, "day" to 216, "most" to 212, "us" to 212,
-        // FUTO & Gesture typing domain words
-        "futo" to 215, "keyboard" to 220, "gesture" to 220, "swipe" to 218, "typing" to 218,
-        "type" to 214, "adaptive" to 212, "adapt" to 205, "learn" to 215, "learns" to 212,
-        "learning" to 216, "style" to 218, "locally" to 210, "local" to 208, "privacy" to 215,
-        "private" to 210, "model" to 208, "models" to 200, "neural" to 204, "spatial" to 204,
-        "drift" to 202, "vector" to 202, "path" to 210, "curve" to 204, "corner" to 205,
-        "accuracy" to 212, "accurate" to 208, "predict" to 210, "prediction" to 214,
-        "smart" to 210, "fast" to 215, "speed" to 216, "smooth" to 208, "fluid" to 204,
-        "thumb" to 206, "finger" to 206, "touch" to 212, "screen" to 212, "android" to 218,
-        "mobile" to 208, "phone" to 214, "device" to 210, "system" to 212, "open" to 215,
-        "source" to 210, "code" to 212, "build" to 212, "test" to 214, "train" to 210,
-        "training" to 208, "profile" to 210, "user" to 214, "users" to 208, "word" to 216,
-        "words" to 214, "text" to 216, "write" to 215, "writing" to 216, "written" to 205,
-        "letter" to 208, "letters" to 206, "key" to 214, "keys" to 212, "press" to 206,
-        // Ambiguous minimal pairs & pangram words
-        "quick" to 215, "quite" to 206, "quiet" to 204, "quit" to 198,
-        "brown" to 208, "brain" to 204, "bring" to 210, "bright" to 204,
-        "fox" to 205, "fix" to 208, "box" to 206,
-        "jumps" to 206, "jump" to 208, "just" to 220,
-        "lazy" to 205, "late" to 210, "last" to 214, "later" to 212,
-        "dog" to 210, "dogs" to 202, "doing" to 212, "done" to 214,
-        "form" to 214, "from" to 225, "firm" to 198, "farm" to 198,
-        "night" to 215, "might" to 214, "right" to 222, "sight" to 202, "light" to 212, "fight" to 202,
-        "hello" to 222, "help" to 218, "held" to 204, "hell" to 190, "hill" to 198,
-        "feel" to 218, "fell" to 204, "fill" to 204, "full" to 212, "fall" to 206,
-        "free" to 216, "fire" to 206, "five" to 206, "fine" to 210, "find" to 216,
-        "keep" to 218, "kept" to 202, "deep" to 206, "sleep" to 210,
-        "coffee" to 214, "code" to 212, "core" to 208, "care" to 210, "case" to 210,
-        "book" to 212, "boot" to 198, "both" to 212, "best" to 218, "better" to 218,
-        "too" to 216, "top" to 212, "tip" to 202, "tap" to 208, "try" to 216,
-        "three" to 212, "tree" to 206, "true" to 214, "trust" to 206,
-        "where" to 216, "were" to 214, "we" to 225, "water" to 210, "watch" to 210,
-        "world" to 216, "would" to 215, "wound" to 190, "ancora" to 180,
-        "great" to 218, "green" to 208, "group" to 208, "grow" to 206,
-        "small" to 212, "smart" to 212, "smile" to 204, "still" to 216, "state" to 212,
-        "start" to 216, "stop" to 212, "store" to 208, "story" to 208, "study" to 206,
-        "every" to 214, "ever" to 210, "never" to 216, "next" to 216, "need" to 218,
-        "near" to 208, "name" to 214, "nice" to 212, "note" to 210, "nothing" to 210,
-        "always" to 214, "almost" to 208, "along" to 206, "already" to 210, "alone" to 204,
-        "change" to 212, "check" to 214, "choice" to 206, "clear" to 212, "close" to 212,
-        "clean" to 208, "cloud" to 204, "class" to 206, "click" to 206,
-        "place" to 214, "plan" to 212, "play" to 214, "please" to 214, "point" to 214,
-        "power" to 212, "part" to 212, "past" to 206, "pass" to 206, "page" to 208,
-        "paper" to 204, "person" to 210, "personal" to 210, "pattern" to 206,
-        "question" to 210, "quality" to 206, "quickly" to 210,
-        "real" to 214, "really" to 216, "read" to 214, "ready" to 212, "reason" to 208,
-        "result" to 208, "return" to 208, "run" to 212, "running" to 208, "rule" to 204,
-        "same" to 214, "save" to 210, "safe" to 208, "send" to 212, "sense" to 206,
-        "service" to 208, "set" to 214, "shift" to 208, "show" to 214, "side" to 210,
-        "simple" to 212, "since" to 210, "skill" to 208, "space" to 212, "speak" to 206,
-        "special" to 208, "custom" to 208, "context" to 208, "control" to 210,
-        "today" to 216, "together" to 210, "tomorrow" to 208, "tonight" to 208,
-        "thank" to 214, "thanks" to 216, "thing" to 214, "things" to 214, "thought" to 208,
-        "through" to 212, "under" to 210, "until" to 210, "update" to 210, "using" to 212,
-        "value" to 208, "very" to 216, "view" to 210, "voice" to 210,
-        "walk" to 206, "wait" to 210, "week" to 212, "while" to 212, "white" to 206,
-        "whole" to 208, "without" to 212, "wonder" to 204, "working" to 212,
-        "yes" to 216, "yet" to 210, "young" to 204, "zero" to 204, "zone" to 204
-    )
+        // Tier 2: High-frequency everyday conversation & messaging words (200..229)
+        val tier2 = listOf(
+            "find", "here", "thing", "many", "well", "only", "those", "tell", "very", "even",
+            "back", "any", "good", "woman", "through", "life", "child", "there", "work", "down",
+            "may", "after", "should", "call", "world", "over", "school", "still", "try", "in",
+            "last", "ask", "need", "too", "feel", "three", "when", "state", "never", "become",
+            "between", "high", "really", "something", "most", "another", "much", "family", "own", "out",
+            "leave", "put", "old", "while", "mean", "on", "keep", "student", "why", "let",
+            "great", "same", "big", "group", "begin", "seem", "country", "help", "talk", "where",
+            "turn", "problem", "every", "start", "hand", "might", "american", "show", "part", "about",
+            "against", "place", "over", "such", "again", "few", "case", "most", "week", "company",
+            "where", "system", "each", "right", "program", "hear", "so", "question", "during", "work",
+            "play", "government", "run", "small", "number", "off", "always", "move", "like", "night",
+            "live", "mr", "point", "believe", "hold", "today", "bring", "happen", "next", "without",
+            "before", "large", "all", "million", "must", "home", "under", "water", "room", "write",
+            "mother", "area", "national", "money", "story", "young", "fact", "month", "different", "lot",
+            "study", "book", "eye", "job", "word", "though", "business", "issue", "side", "kind",
+            "four", "head", "far", "black", "long", "both", "little", "house", "yes", "after",
+            "since", "long", "provide", "service", "around", "friend", "important", "father", "sit", "away",
+            "until", "power", "hour", "game", "often", "yet", "line", "political", "end", "among",
+            "ever", "stand", "bad", "lose", "however", "member", "pay", "law", "meet", "car",
+            "city", "almost", "include", "continue", "set", "later", "community", "much", "name", "five",
+            "once", "white", "least", "president", "learn", "real", "change", "team", "minute", "best",
+            "several", "idea", "kid", "body", "information", "nothing", "ago", "right", "lead", "social",
+            "understand", "whether", "watch", "together", "follow", "around", "parent", "only", "stop", "face",
+            "anything", "create", "public", "already", "speak", "others", "read", "level", "allow", "add",
+            "office", "spend", "door", "health", "person", "art", "sure", "such", "war", "history",
+            "party", "within", "grow", "result", "open", "change", "morning", "walk", "reason", "low",
+            "win", "research", "girl", "guy", "early", "food", "moment", "himself", "air", "teacher",
+            "force", "offer", "enough", "education", "across", "although", "remember", "foot", "second", "boy",
+            "maybe", "toward", "able", "age", "policy", "everything", "love", "process", "music", "including",
+            "consider", "appear", "actually", "buy", "probably", "human", "wait", "serve", "market", "die",
+            "send", "expect", "sense", "build", "stay", "fall", "oh", "nation", "plan", "cut",
+            "college", "interest", "death", "course", "someone", "experience", "behind", "reach", "local", "kill",
+            "six", "remain", "effect", "yeah", "suggest", "class", "control", "raise", "care", "perhaps",
+            "little", "late", "hard", "field", "else", "pass", "former", "sell", "major", "sometimes",
+            "require", "along", "development", "themselves", "report", "role", "better", "economic", "effort", "decide",
+            "rate", "strong", "possible", "heart", "drug", "show", "leader", "light", "voice", "wife",
+            "whole", "police", "mind", "finally", "pull", "return", "free", "military", "price", "less",
+            "according", "decision", "explain", "son", "hope", "even", "develop", "view", "relationship", "carry",
+            "town", "road", "drive", "arm", "true", "federal", "break", "better", "difference", "thank",
+            "receive", "value", "international", "building", "action", "full", "model", "join", "season", "society",
+            "tax", "director", "position", "player", "agree", "especially", "record", "pick", "wear", "paper",
+            "special", "space", "ground", "form", "support", "event", "official", "whose", "matter", "everyone",
+            "center", "couple", "site", "project", "hit", "base", "activity", "star", "table", "need",
+            "court", "produce", "eat", "teach", "oil", "half", "situation", "easy", "cost", "industry",
+            "figure", "street", "image", "itself", "phone", "either", "data", "cover", "quite", "picture",
+            "clear", "practice", "piece", "land", "recent", "describe", "product", "doctor", "wall", "patient",
+            "worker", "news", "test", "movie", "certain", "north", "personal", "simply", "third", "technology",
+            "catch", "step", "baby", "computer", "type", "attention", "draw", "film", "republican", "tree",
+            "source", "red", "nearly", "organization", "choose", "cause", "hair", "look", "point", "century",
+            "evidence", "window", "difficult", "listen", "soon", "culture", "billion", "chance", "brother", "energy",
+            "period", "summer", "realize", "hundred", "available", "plant", "likely", "opportunity", "term", "short",
+            "letter", "condition", "choice", "single", "rule", "daughter", "administration", "south", "husband", "congress",
+            "floor", "campaign", "material", "population", "economy", "medical", "hospital", "church", "close", "thousand",
+            "risk", "current", "fire", "future", "wrong", "involve", "defense", "anyone", "increase", "security",
+            "bank", "myself", "certainly", "west", "sport", "board", "seek", "per", "subject", "officer",
+            "private", "rest", "behavior", "deal", "performance", "fight", "throw", "top", "quickly", "past",
+            "goal", "bed", "order", "author", "fill", "represent", "focus", "foreign", "drop", "blood",
+            "upon", "agency", "push", "nature", "color", "recently", "store", "reduce", "sound", "note",
+            "fine", "near", "movement", "page", "enter", "share", "common", "poor", "natural", "race",
+            "concern", "series", "significant", "similar", "hot", "language", "usually", "response", "dead", "rise",
+            "animal", "factor", "decade", "article", "shoot", "east", "save", "seven", "artist", "scene",
+            "stock", "career", "despite", "central", "eight", "thus", "treatment", "beyond", "happy", "exactly",
+            "protect", "approach", "lie", "size", "dog", "fund", "serious", "occur", "media", "ready",
+            "sign", "thought", "list", "individual", "simple", "quality", "pressure", "accept", "answer", "resource",
+            "identify", "left", "meeting", "determine", "prepare", "disease", "whatever", "success", "argue", "cup",
+            "particularly", "amount", "ability", "staff", "recognize", "indicate", "character", "growth", "loss", "degree",
+            "wonder", "attack", "herself", "region", "television", "box", "training", "pretty", "trade", "election",
+            "everybody", "physical", "lay", "general", "feeling", "standard", "bill", "message", "fail", "outside",
+            "arrive", "analysis", "benefit", "sex", "forward", "lawyer", "present", "section", "environmental", "glass",
+            "skill", "sister", "professor", "operation", "financial", "crime", "stage", "ok", "compare", "authority",
+            "miss", "design", "sort", "act", "ten", "knowledge", "gun", "station", "blue", "strategy",
+            "clearly", "discuss", "indeed", "truth", "song", "example", "democratic", "check", "environment", "leg",
+            "dark", "various", "rather", "laugh", "guess", "executive", "prove", "hang", "entire", "rock",
+            "forget", "claim", "remove", "manager", "enjoy", "network", "legal", "religious", "cold", "final",
+            "main", "science", "green", "memory", "card", "above", "seat", "cell", "establish", "nice",
+            "trial", "expert", "spring", "firm", "radio", "visit", "management", "avoid", "imagine", "tonight",
+            "huge", "ball", "finish", "yourself", "theory", "impact", "respond", "statement", "maintain", "charge",
+            "popular", "traditional", "onto", "reveal", "direction", "weapon", "employee", "cultural", "contain", "peace",
+            "pain", "apply", "measure", "wide", "shake", "fly", "interview", "manage", "chair", "fish",
+            "particular", "camera", "structure", "politics", "perform", "bit", "weight", "suddenly", "discover", "candidate",
+            "production", "treat", "trip", "evening", "affect", "inside", "conference", "unit", "style", "adult",
+            "worry", "range", "mention", "deep", "edge", "specific", "writer", "trouble", "necessary", "throughout",
+            "challenge", "fear", "shoulder", "institution", "middle", "sea", "dream", "bar", "beautiful", "property",
+            "instead", "improve", "stuff", "detail", "method", "somebody", "magazine", "hotel", "soldier", "reflect",
+            "heavy", "sexual", "bag", "heat", "marriage", "tough", "sing", "surface", "purpose", "exist",
+            "pattern", "whom", "skin", "agent", "owner", "machine", "gas", "ahead", "generation", "commercial",
+            "address", "cancer", "item", "reality", "coach", "mrs", "yard", "beat", "violence", "total",
+            "tend", "investment", "discussion", "finger", "garden", "notice", "collection", "modern", "task", "partner",
+            "positive", "civil", "kitchen", "consumer", "shot", "budget", "wish", "painting", "scientist", "safe",
+            "agreement", "capital", "mouth", "nor", "victim", "newspaper", "threat", "responsibility", "smile", "attorney",
+            "score", "account", "interesting", "audience", "rich", "dinner", "vote", "western", "relate", "travel",
+            "debate", "prevent", "citizen", "majority", "none", "front", "born", "admit", "senior", "assume",
+            "wind", "key", "professional", "mission", "fast", "alone", "customer", "suffer", "speech", "successful",
+            "option", "participant", "southern", "fresh", "eventually", "forest", "video", "global", "senate", "reform",
+            "access", "restaurant", "judge", "publish", "relation", "release", "bird", "opinion", "credit", "critical",
+            "corner", "concerned", "recall", "version", "stare", "safety", "effective", "neighborhood", "original", "troop",
+            "income", "directly", "hurt", "species", "immediately", "track", "basic", "strike", "sky", "freedom",
+            "absolutely", "plane", "nobody", "achieve", "object", "attitude", "labor", "refer", "concept", "client",
+            "powerful", "perfect", "nine", "therefore", "conduct", "announce", "conversation", "examine", "touch", "please",
+            "attend", "completely", "variety", "sleep", "involved", "investigation", "nuclear", "researcher", "press", "conflict",
+            "spirit", "replace", "british", "encourage", "argument", "camp", "brain", "feature", "afternoon", "weekend",
+            "dozen", "possibility", "insurance", "department", "battle", "beginning", "date", "generally", "african", "sorry",
+            "crisis", "complete", "fan", "stick", "define", "easily", "hole", "element", "vision", "status",
+            "normal", "chinese", "ship", "solution", "stone", "slowly", "scale", "university", "introduce", "driver",
+            "attempt", "park", "spot", "lack", "ice", "boat", "drink", "sun", "distance", "wood",
+            "handle", "truck", "return", "mountain", "survey", "supposed", "tradition", "winter", "village", "soviet",
+            "refuse", "sales", "roll", "communication", "screen", "gain", "resident", "hide", "gold", "club",
+            "farm", "potential", "european", "presence", "independent", "district", "shape", "reader", "contract", "crowd",
+            "christian", "express", "apartment", "willing", "strength", "previous", "band", "obviously", "horse", "interested",
+            "target", "prison", "ride", "guard", "terms", "demand", "reporter", "deliver", "text", "tool",
+            "wild", "vehicle", "observe", "flight", "facility", "understanding", "average", "emerge", "advantage", "quick",
+            "light", "leadership", "earn", "pound", "basis", "bright", "operate", "guest", "sample", "contribute",
+            "tiny", "block", "protection", "settle", "feed", "collect", "additional", "highly", "identity", "title",
+            "mostly", "lesson", "faith", "river", "promote", "living", "count", "unless", "marry", "tomorrow",
+            "technique", "path", "ear", "shop", "folk", "principle", "survive", "lift", "border", "competition",
+            "jump", "gather", "limit", "fit", "cry", "equipment", "worth", "associate", "critic", "warm",
+            "aspect", "insist", "failure", "annual", "french", "christmas", "comment", "responsible", "affair", "procedure",
+            "regular", "spread", "chairman", "baseball", "soft", "ignore", "egg", "belief", "demonstrate", "anybody",
+            "murder", "gift", "religion", "review", "editor", "engage", "coffee", "document", "speed", "cross",
+            "influence", "anyway", "threaten", "commit", "female", "youth", "wave", "afraid", "quarter", "background",
+            "native", "broad", "wonderful", "deny", "apparently", "slightly", "reaction", "twice", "suit", "perspective",
+            "growing", "blow", "construction", "intelligence", "destroy", "cook", "connection", "burn", "shoe", "grade",
+            "context", "committee", "hey", "mistake", "focus", "smile", "location", "clothes", "quiet", "dress",
+            "promise", "aware", "neighbor", "function", "bone", "active", "extend", "chief", "combine", "wine",
+            "below", "cool", "voter", "learning", "bus", "hell", "dangerous", "remind", "moral", "united",
+            "category", "relatively", "victory", "academic", "internet", "healthy", "negative", "following", "historical", "medicine",
+            "tour", "depend", "photo", "finding", "grab", "direct", "classroom", "contact", "justice", "participate",
+            "daily", "fair", "pair", "famous", "exercise", "knee", "flower", "tape", "hire", "familiar",
+            "appropriate", "supply", "fully", "actor", "birth", "search", "tie", "democracy", "eastern", "primary",
+            "yesterday", "circle", "device", "progress", "bottom", "island", "exchange", "clean", "studio", "train",
+            "lady", "colleague", "application", "neck", "lean", "damage", "plastic", "tall", "plate", "hate",
+            "otherwise", "writing", "male", "alive", "expression", "football", "intend", "chicken", "army", "abuse",
+            "theater", "shut", "map", "extra", "session", "danger", "welcome", "domestic", "lots", "literature",
+            "rain", "desire", "assessment", "injury", "respect", "northern", "nod", "paint", "fuel", "leaf",
+            "dry", "russian", "instruction", "pool", "climb", "sweet", "engine", "fourth", "salt", "expand",
+            "importance", "metal", "fat", "ticket", "software", "disappear", "corporate", "strange", "lip", "reading",
+            "urban", "mental", "increasingly", "lunch", "educational", "somewhere", "farmer", "sugar", "planet", "favorite",
+            "explore", "obtain", "enemy", "greatest", "complex", "surround", "athlete", "invite", "repeat", "carefully",
+            "soul", "scientific", "impossible", "panel", "meaning", "mom", "married", "instrument", "predict", "weather",
+            "presidential", "emotional", "commitment", "supreme", "bear", "pocket", "thin", "temperature", "surprise", "poll",
+            "proposal", "consequence", "breath", "sight", "balance", "adopt", "minority", "straight", "connect", "works",
+            "teaching", "belong", "aid", "advice", "okay", "photograph", "empty", "regional", "trail", "novel",
+            "code", "somehow", "organize", "jury", "breast", "iraqi", "acknowledge", "theme", "storm", "union",
+            "desk", "thanks", "fruit", "expensive", "yellow", "conclusion", "prime", "shadow", "struggle", "conclude",
+            "analyst", "dance", "regulation", "being", "ring", "largely", "shift", "revenue", "mark", "locate",
+            "county", "appearance", "package", "difficulty", "bridge", "recommend", "obvious", "basically", "generate", "anymore",
+            "propose", "thinking", "possibly", "trend", "visitor", "loan", "currently", "comfortable", "investor", "profit",
+            "angry", "crew", "deeply", "accident", "male", "meal", "hearing", "traffic", "muscle", "notion",
+            "capture", "prefer", "truly", "earth", "japanese", "chest", "thick", "cash", "museum", "beauty",
+            "emergency", "unique", "internal", "ethnic", "link", "stress", "content", "select", "root", "nose",
+            "declare", "appreciate", "actual", "bottle", "hardly", "setting", "launch", "file", "sick", "outcome",
+            "ad", "defend", "matter", "sheet", "ought", "ensure", "catholic", "extremely", "extent", "component",
+            "mix", "long-term", "slow", "contrast", "zone", "wake", "airport", "brown", "shirt", "pilot",
+            "warn", "ultimately", "cat", "contribution", "capacity", "ourselves", "estate", "guide", "circumstance", "snow",
+            "english", "politician", "steal", "pursue", "slip", "percentage", "meat", "funny", "neither", "soil",
+            "surgery", "correct", "jewish", "blame", "estimate", "due", "basketball", "golf", "investigate", "crazy",
+            "significantly", "chain", "branch", "combination", "frequently", "governor", "relief", "user", "dad", "kick",
+            "manner", "ancient", "silence", "rating", "golden", "motion", "german", "gender", "solve", "fee",
+            "landscape", "used", "bowl", "equal", "forth", "frame", "typical", "except", "conservative", "eliminate",
+            "host", "hall", "trust", "ocean", "row", "producer", "afford", "meanwhile", "regime", "division",
+            "confirm", "fix", "appeal", "mirror", "tooth", "smart", "length", "entirely", "rely", "topic",
+            "complain", "issue", "variable", "telephone", "perception", "attract", "confidence", "bedroom", "secret", "debt",
+            "rare", "tank", "nurse", "coverage", "opposition", "aside", "anywhere", "bond", "pleasure", "master",
+            "era", "requirement", "fun", "expectation", "wing", "separate", "somewhat", "pour", "stir", "judgment",
+            "beer", "reference", "tear", "doubt", "grant", "seriously", "minister", "totally", "hero", "industrial",
+            "cloud", "stretch", "winner", "volume", "seed", "surprised", "fashion", "pepper", "busy", "cheap",
+            "beach", "divide", "oppose", "route", "league", "core", "mail", "futo", "keyboard", "gesture",
+            "swipe", "typing", "adaptive", "android", "hello", "hey", "awesome", "great", "perfect", "thanks",
+            "please", "sorry", "yes", "no", "maybe", "tonight", "tomorrow", "yesterday", "morning", "afternoon",
+            "evening", "weekend", "message", "email", "reply", "send", "delete", "space", "enter", "shift",
+            "fox", "jumps", "lazy", "dogs", "learns", "locally", "privacy", "spatial", "drift", "vector",
+            "curve", "accuracy", "accurate", "prediction", "smooth", "fluid", "thumb", "keys", "written"
+        )
+        for (w in tier2) {
+            if (!map.containsKey(w)) {
+                map[w] = 212
+            }
+        }
+        map
+    }
 
-    // Built-in starter bigrams for immediate context sensitivity before user builds more
+    // Common word-to-word transitions for immediate context disambiguation
     val starterBigrams: Map<Pair<String, String>, Int> = mapOf(
+        ("i" to "am") to 6,
+        ("i" to "have") to 5,
+        ("i" to "will") to 5,
+        ("i" to "think") to 5,
+        ("i" to "want") to 5,
+        ("i" to "need") to 5,
+        ("you" to "are") to 6,
+        ("you" to "can") to 5,
+        ("you" to "have") to 5,
+        ("it" to "is") to 6,
+        ("it" to "was") to 5,
+        ("that" to "is") to 5,
+        ("there" to "is") to 5,
+        ("there" to "are") to 5,
+        ("this" to "is") to 6,
+        ("going" to "to") to 6,
+        ("want" to "to") to 6,
+        ("need" to "to") to 6,
+        ("have" to "to") to 6,
+        ("used" to "to") to 5,
+        ("able" to "to") to 5,
+        ("thank" to "you") to 6,
+        ("thanks" to "for") to 5,
+        ("looking" to "for") to 5,
+        ("wait" to "for") to 4,
+        ("come" to "from") to 5,
+        ("came" to "from") to 5,
+        ("away" to "from") to 5,
+        ("new" to "form") to 5,
+        ("good" to "morning") to 5,
+        ("good" to "night") to 5,
+        ("right" to "now") to 6,
+        ("at" to "night") to 5,
+        ("of" to "the") to 6,
+        ("in" to "the") to 6,
+        ("to" to "the") to 6,
+        ("on" to "the") to 6,
+        ("for" to "the") to 6,
+        ("and" to "the") to 5,
+        ("with" to "the") to 5,
+        ("from" to "the") to 5,
+        ("by" to "the") to 4,
+        ("at" to "the") to 5,
         ("the" to "quick") to 4,
         ("quick" to "brown") to 4,
         ("brown" to "fox") to 4,
@@ -136,21 +261,177 @@ object FutoLexicon {
         ("over" to "the") to 4,
         ("the" to "lazy") to 4,
         ("lazy" to "dog") to 4,
-        ("their" to "new") to 3,
-        ("new" to "form") to 3,
-        ("came" to "from") to 4,
-        ("from" to "there") to 4,
-        ("at" to "night") to 4,
-        ("feel" to "free") to 4,
-        ("free" to "to") to 4,
-        ("to" to "keep") to 3,
-        ("good" to "coffee") to 3,
-        ("futo" to "adaptive") to 4,
-        ("adaptive" to "keyboard") to 4,
-        ("keyboard" to "learns") to 4,
-        ("learns" to "your") to 4,
-        ("your" to "gesture") to 4,
-        ("gesture" to "style") to 4,
-        ("style" to "locally") to 4
+        ("feel" to "free") to 5,
+        ("let" to "me") to 5,
+        ("me" to "know") to 5,
+        ("talk" to "to") to 4,
+        ("see" to "you") to 5,
+        ("how" to "are") to 5,
+        ("are" to "you") to 5,
+        ("what" to "is") to 5
     )
+
+    /**
+     * Fast prefix + edit-distance lookup for standard tap-typing word composition.
+     */
+    fun getPrefixAndTypoCandidates(
+        composingPrefix: String,
+        prevContextWord: String,
+        userWords: Map<String, com.example.data.UserWordFrequencyEntity>,
+        userBigrams: Map<Pair<String, String>, com.example.data.UserBigramEntity>,
+        keyGeometries: Map<Char, KeyGeometry>
+    ): List<GestureCandidate> {
+        val cleanPrefix = composingPrefix.trim().lowercase().filter { it in 'a'..'z' }
+        val prevNorm = prevContextWord.trim().lowercase().filter { it in 'a'..'z' }
+
+        // If composing buffer is empty, return next-word predictions based on prevContextWord!
+        if (cleanPrefix.isEmpty()) {
+            val nextWordScores = mutableListOf<GestureCandidate>()
+            if (prevNorm.isNotEmpty()) {
+                for ((pair, entity) in userBigrams) {
+                    if (pair.first == prevNorm) {
+                        val score = (80f + entity.transitionCount * 4.5f).coerceAtMost(98f)
+                        nextWordScores.add(
+                            GestureCandidate(
+                                word = pair.second,
+                                adaptiveScore = score,
+                                baselineStaticScore = 72f,
+                                spatialAnchorScore = 90f,
+                                dtwShapeScore = 90f,
+                                inflectionMatchScore = 90f,
+                                contextBigramBoost = entity.transitionCount * 4.5f,
+                                personalStyleBoost = entity.transitionCount * 4.5f,
+                                explanationBadge = "Next Word"
+                            )
+                        )
+                    }
+                }
+                for ((pair, count) in starterBigrams) {
+                    if (pair.first == prevNorm && nextWordScores.none { it.word == pair.second }) {
+                        val score = (75f + count * 3f).coerceAtMost(94f)
+                        nextWordScores.add(
+                            GestureCandidate(
+                                word = pair.second,
+                                adaptiveScore = score,
+                                baselineStaticScore = 75f,
+                                spatialAnchorScore = 90f,
+                                dtwShapeScore = 90f,
+                                inflectionMatchScore = 90f,
+                                contextBigramBoost = count * 3f,
+                                personalStyleBoost = count * 3f,
+                                explanationBadge = "Next Word"
+                            )
+                        )
+                    }
+                }
+            }
+            if (nextWordScores.isEmpty()) {
+                listOf("the", "i", "you", "to", "and").forEachIndexed { idx, w ->
+                    nextWordScores.add(
+                        GestureCandidate(
+                            word = w,
+                            adaptiveScore = 88f - idx * 3f,
+                            baselineStaticScore = 88f - idx * 3f,
+                            spatialAnchorScore = 90f,
+                            dtwShapeScore = 90f,
+                            inflectionMatchScore = 90f,
+                            contextBigramBoost = 0f,
+                            personalStyleBoost = 0f,
+                            explanationBadge = "Suggested"
+                        )
+                    )
+                }
+            }
+            return nextWordScores.sortedByDescending { it.adaptiveScore }.take(5)
+        }
+
+        val results = mutableListOf<GestureCandidate>()
+
+        // Always include the exact typed literal as a candidate so the user can commit custom words
+        val exactInLexicon = defaultWordsWithFreq.containsKey(cleanPrefix) || userWords.containsKey(cleanPrefix)
+        val exactBigramBoost = if (prevNorm.isNotEmpty()) {
+            ((userBigrams[prevNorm to cleanPrefix]?.transitionCount ?: 0) * 3f +
+                (starterBigrams[prevNorm to cleanPrefix] ?: 0) * 1.8f)
+        } else 0f
+
+        results.add(
+            GestureCandidate(
+                word = cleanPrefix,
+                adaptiveScore = if (exactInLexicon) (91f + exactBigramBoost).coerceAtMost(99f) else 83f,
+                baselineStaticScore = if (exactInLexicon) 90f else 80f,
+                spatialAnchorScore = 95f,
+                dtwShapeScore = 95f,
+                inflectionMatchScore = 95f,
+                contextBigramBoost = exactBigramBoost,
+                personalStyleBoost = exactBigramBoost,
+                explanationBadge = if (exactInLexicon) "Exact" else "\"$cleanPrefix\""
+            )
+        )
+
+        val combinedPool = HashMap<String, Int>(defaultWordsWithFreq)
+        for ((w, u) in userWords) {
+            combinedPool[w] = (combinedPool[w] ?: 180) + u.personalUseCount * 8 + u.correctionSelectCount * 15
+        }
+
+        for ((word, freq) in combinedPool) {
+            if (word == cleanPrefix) continue
+            val isPrefixMatch = word.startsWith(cleanPrefix) && word.length <= cleanPrefix.length + 6
+            val isSameLenTypo = word.length == cleanPrefix.length && cleanPrefix.length >= 3 &&
+                isAdjacentKeyTypo(cleanPrefix, word, keyGeometries)
+
+            if (!isPrefixMatch && !isSameLenTypo) continue
+
+            val lenDiffPenalty = (word.length - cleanPrefix.length).coerceAtLeast(0) * 2.2f
+            val baseScore = if (isPrefixMatch) {
+                (76f + (freq - 180) * 0.25f - lenDiffPenalty).coerceIn(50f, 90f)
+            } else {
+                (78f + (freq - 180) * 0.22f).coerceIn(55f, 89f)
+            }
+
+            val bigramBoost = if (prevNorm.isNotEmpty()) {
+                ((userBigrams[prevNorm to word]?.transitionCount ?: 0) * 3.2f +
+                    (starterBigrams[prevNorm to word] ?: 0) * 1.8f)
+            } else 0f
+            val personalBoost = (userWords[word]?.personalUseCount ?: 0) * 1.5f +
+                (userWords[word]?.correctionSelectCount ?: 0) * 2.5f
+
+            val total = (baseScore + bigramBoost + personalBoost).coerceIn(40f, 98.5f)
+            results.add(
+                GestureCandidate(
+                    word = word,
+                    adaptiveScore = total,
+                    baselineStaticScore = baseScore,
+                    spatialAnchorScore = 90f,
+                    dtwShapeScore = 88f,
+                    inflectionMatchScore = 90f,
+                    contextBigramBoost = bigramBoost,
+                    personalStyleBoost = bigramBoost + personalBoost,
+                    explanationBadge = when {
+                        bigramBoost >= 2f -> "+N-Gram"
+                        isSameLenTypo -> "Auto-Correct"
+                        else -> "Completion"
+                    }
+                )
+            )
+        }
+
+        return results.sortedByDescending { it.adaptiveScore }.distinctBy { it.word }.take(6)
+    }
+
+    private fun isAdjacentKeyTypo(typed: String, candidate: String, keys: Map<Char, KeyGeometry>): Boolean {
+        var mismatches = 0
+        for (i in typed.indices) {
+            val c1 = typed[i]
+            val c2 = candidate[i]
+            if (c1 != c2) {
+                mismatches++
+                if (mismatches > 1) return false
+                val g1 = keys[c1] ?: return false
+                val g2 = keys[c2] ?: return false
+                val dist = kotlin.math.hypot(g1.canonicalX - g2.canonicalX, g1.canonicalY - g2.canonicalY)
+                if (dist > 0.22f) return false
+            }
+        }
+        return mismatches == 1
+    }
 }
