@@ -8,35 +8,46 @@ import kotlin.math.abs
 import kotlin.math.acos
 import kotlin.math.exp
 import kotlin.math.hypot
+import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.sqrt
 
 /**
- * Improved Gesture Typing Recognition Engine built on FUTO Keyboard's LatinIME principles,
- * augmented with Curvature-Velocity Inflection Detection, Band-Constrained Dynamic Time Warping (DTW),
- * Double-Letter Loop/Dwell Detection, and Continuous User Style Adaptation.
+ * High-accuracy Gesture Typing Engine modeled on FUTO Keyboard / LatinIME:
+ * 1. Exact LatinIME QWERTY key coordinates (Row 1: 10 keys, Row 2: 9 keys, Row 3: 7 keys between Shift & Backspace).
+ * 2. Savitzky-Golay smoothing + 32-point equidistant resampling.
+ * 3. Monotonic Sequence Alignment: enforces that all characters of a candidate word appear in
+ *    chronological arc-length order along the swipe path.
+ * 4. Corner Inflection Verification: ensures sharp turns in the user's swipe align with interior word keys,
+ *    and penalizes candidate words that require a sharp turn not present in the user's swipe.
+ * 5. Strong Common-Word Prior + Previously-Used Word & Bigram Priority: words the user has already
+ *    used (and common everyday words) are strongly prioritized over obscure candidates.
  */
 class GestureTypingEngine {
 
-    val qwertyKeys: Map<Char, KeyGeometry> = buildStandardQwertyGeometry()
+    val qwertyKeys: Map<Char, KeyGeometry> = buildLatinImeQwertyGeometry()
 
-    private fun buildStandardQwertyGeometry(): Map<Char, KeyGeometry> {
+    /**
+     * Builds exact normalized coordinates [0f..1f] for the 3-row letter grid:
+     * - Row 0: q w e r t y u i o p (10 keys across [0.0 .. 1.0])
+     * - Row 1: a s d f g h j k l   (9 keys centered across [0.05 .. 0.95])
+     * - Row 2: z x c v b n m       (7 keys centered between Shift [0.0..0.15] and Backspace [0.85..1.0])
+     */
+    private fun buildLatinImeQwertyGeometry(): Map<Char, KeyGeometry> {
         val rows = listOf(
             "qwertyuiop",
             "asdfghjkl",
             "zxcvbnm"
         )
-        // Row vertical centers in normalized letter-area space [0f..1f]
-        val rowY = listOf(0.18f, 0.50f, 0.82f)
-        val rowHorizontalOffsets = listOf(0.0f, 0.05f, 0.15f)
+        val rowY = listOf(0.1667f, 0.50f, 0.8333f)
+        val rowStartX = listOf(0.0f, 0.05f, 0.15f)
         val keyWidth = 0.10f
-        val keyHeight = 0.30f
+        val keyHeight = 0.3333f
 
         val map = mutableMapOf<Char, KeyGeometry>()
         for (r in rows.indices) {
             val rowStr = rows[r]
-            val startX = rowHorizontalOffsets[r]
+            val startX = rowStartX[r]
             for (c in rowStr.indices) {
                 val ch = rowStr[c]
                 val cx = startX + (c + 0.5f) * keyWidth
@@ -45,7 +56,7 @@ class GestureTypingEngine {
                     char = ch,
                     row = r,
                     col = c,
-                    canonicalX = cx.coerceIn(0.04f, 0.96f),
+                    canonicalX = cx,
                     canonicalY = cy,
                     width = keyWidth,
                     height = keyHeight
@@ -55,9 +66,6 @@ class GestureTypingEngine {
         return map
     }
 
-    /**
-     * Finds the nearest key to (x, y), optionally using learned spatial offsets.
-     */
     fun findNearestKey(
         x: Float,
         y: Float,
@@ -82,8 +90,11 @@ class GestureTypingEngine {
     }
 
     /**
-     * Decodes a continuous swipe trajectory into ranked word candidates, computing both
-     * the Static Baseline score and the User-Adapted score for real-time telemetry comparison.
+     * Decodes a continuous swipe trajectory into ranked word candidates.
+     * Heavily prioritizes:
+     * 1. Accurate start/end + monotonic interior key alignment + corner turning points
+     * 2. Words the user has already used (`userWords` + `userBigrams` + `userPrototypes`)
+     * 3. High-frequency common words over rare dictionary words
      */
     fun decodeGesture(
         rawPoints: List<RawTouchPoint>,
@@ -94,34 +105,42 @@ class GestureTypingEngine {
         userBigrams: Map<Pair<String, String>, UserBigramEntity>,
         userPrototypes: Map<String, GesturePrototypeEntity>
     ): GestureDecodeResult {
-        if (rawPoints.isEmpty()) {
-            return emptyResult()
-        }
+        if (rawPoints.isEmpty()) return emptyResult()
 
         val durationMs = max(1L, rawPoints.last().timestampMs - rawPoints.first().timestampMs)
         val totalArcLength = computeArcLength(rawPoints)
 
-        // If the gesture is very short (tap or micro-slip), treat as single-key tap + prefix prediction
+        // Short tap fallback
         if (rawPoints.size < 3 || totalArcLength < 0.045f) {
             val pt = rawPoints.first()
-            val tappedChar = findNearestKey(pt.x, pt.y, spatialProfiles, hyperparams.enablePersonalDrift)
-            return decodeTapSingleKey(
-                tappedChar = tappedChar,
-                pt = pt,
+            val ch = findNearestKey(pt.x, pt.y, spatialProfiles, hyperparams.enablePersonalDrift)
+            val tapCandidates = FutoLexicon.getPrefixAndTypoCandidates(
+                composingPrefix = ch.toString(),
                 prevContextWord = prevContextWord,
-                hyperparams = hyperparams,
-                spatialProfiles = spatialProfiles,
                 userWords = userWords,
-                userBigrams = userBigrams
+                userBigrams = userBigrams,
+                keyGeometries = qwertyKeys
+            )
+            return GestureDecodeResult(
+                candidates = tapCandidates,
+                smoothedPath = listOf(NormalizedPoint(pt.x, pt.y, 0f, 0f, 0f, true, false)),
+                prototype16Path = List(16) { pt.x to pt.y },
+                inflectionNodes = listOf(InflectionNode(0, pt.x, pt.y, 0f, ch, InflectionNode.NodeType.START)),
+                detectedDoubleLetterZone = false,
+                durationMs = durationMs,
+                pathLengthNormalized = totalArcLength,
+                staticTopWord = tapCandidates.firstOrNull()?.word.orEmpty(),
+                adaptiveTopWord = tapCandidates.firstOrNull()?.word.orEmpty(),
+                wasPromotedByAdaptation = false
             )
         }
 
-        // Step 1: Smooth micro-jitter and resample into 32 equidistant points + 16 prototype points
+        // 1. Smooth jitter and resample into 32 equidistant points + 16 prototype points
         val smoothedRaw = smoothTrajectory(rawPoints)
         val resampled32 = resampleWithKinematics(smoothedRaw, 32)
         val prototype16 = resampleSimplePoints(smoothedRaw, 16)
 
-        // Step 2: Extract Inflection Nodes (Start, Corners, Dwell/Loops, End)
+        // 2. Extract Corner Inflections & Dwell/Loop Zones
         val inflectionNodes = extractInflectionNodes(
             points = resampled32,
             spatialProfiles = spatialProfiles,
@@ -129,32 +148,31 @@ class GestureTypingEngine {
         )
         val hasDoubleLetterSignal = resampled32.any { it.isLoopOrDwell }
 
-        // Step 3: Build combined lexicon (FUTO built-in + custom user words)
-        val combinedLexicon = LinkedHashMap<String, Int>(FutoLexicon.defaultWordsWithFreq.size + userWords.size)
+        // 3. Build lexicon combining built-in common words and user's personal words
+        val combinedLexicon = HashMap<String, Int>(FutoLexicon.defaultWordsWithFreq.size + userWords.size)
         combinedLexicon.putAll(FutoLexicon.defaultWordsWithFreq)
         for ((w, entity) in userWords) {
             val clean = w.lowercase().filter { it in 'a'..'z' }
-            if (clean.isNotEmpty()) {
-                combinedLexicon[clean] = max(combinedLexicon[clean] ?: 120, entity.baseFrequency)
+            if (clean.length >= 2) {
+                combinedLexicon[clean] = max(combinedLexicon[clean] ?: 195, entity.baseFrequency)
             }
         }
 
         val startPt = resampled32.first()
         val endPt = resampled32.last()
-        val prevNorm = prevContextWord.trim().lowercase()
+        val prevNorm = prevContextWord.trim().lowercase().filter { it in 'a'..'z' }
 
-        // Step 4: Fast spatial pre-filter on start & end keys (generous radius so drift-shifted words pass)
-        val candidateList = mutableListOf<GestureCandidate>()
+        val candidateList = ArrayList<GestureCandidate>(64)
 
         for ((word, baseFreq) in combinedLexicon) {
-            if (word.isEmpty()) continue
+            if (word.length < 2) continue
             val firstChar = word.first()
             val lastChar = word.last()
             val firstGeom = qwertyKeys[firstChar] ?: continue
             val lastGeom = qwertyKeys[lastChar] ?: continue
 
-            val firstDrift = spatialProfiles[firstChar]
-            val lastDrift = spatialProfiles[lastChar]
+            val firstDrift = if (hyperparams.enablePersonalDrift) spatialProfiles[firstChar] else null
+            val lastDrift = if (hyperparams.enablePersonalDrift) spatialProfiles[lastChar] else null
 
             val staticStartDist = hypot(startPt.x - firstGeom.canonicalX, startPt.y - firstGeom.canonicalY)
             val adaptedStartDist = hypot(
@@ -168,97 +186,110 @@ class GestureTypingEngine {
                 endPt.y - (lastGeom.canonicalY + (lastDrift?.driftY ?: 0f))
             )
 
-            // Pre-filter: either static or adapted endpoints must be within reasonable reach (0.28 normalized)
-            if (min(staticStartDist, adaptedStartDist) > 0.29f ||
-                min(staticEndDist, adaptedEndDist) > 0.31f
+            // Fast endpoint pruning: start and end of swipe must be within ~2.2 key widths of word's first/last letter
+            if (min(staticStartDist, adaptedStartDist) > 0.24f ||
+                min(staticEndDist, adaptedEndDist) > 0.25f
             ) {
                 continue
             }
 
-            // Generate 32-point ideal template path for both Static and User-Adapted key centroids
-            val staticWordTemplate = buildWordTemplate32(word, emptyMap())
-            val adaptedWordTemplate = if (hyperparams.enablePersonalDrift) {
-                buildWordTemplate32(word, spatialProfiles)
+            // Dedup consecutive duplicate letters for spatial path geometry (e.g. "hello" -> "helo")
+            val compressedChars = compressConsecutiveDuplicates(word)
+            val wordHasDoubleLetters = compressedChars.length < word.length
+
+            // 4. Monotonic Sequence Alignment Score (verifies letters appear in order along the swipe!)
+            val staticMonotonicDist = computeMonotonicKeyAlignment(compressedChars, resampled32, emptyMap())
+            val adaptedMonotonicDist = if (hyperparams.enablePersonalDrift) {
+                computeMonotonicKeyAlignment(compressedChars, resampled32, spatialProfiles)
             } else {
-                staticWordTemplate
+                staticMonotonicDist
             }
 
-            // 1. Spatial Anchor Score (Start + End Gaussian receptor likelihood)
-            val sigmaStart = 0.085f
-            val sigmaEnd = 0.095f
+            // Reject candidates whose interior letters are far from the trajectory
+            if (min(staticMonotonicDist, adaptedMonotonicDist) > 0.19f) continue
+
+            // 5. Ideal 32-point Polygonal Template & Band-Constrained DTW
+            val staticTemplate = buildWordTemplate32(compressedChars, emptyMap())
+            val adaptedTemplate = if (hyperparams.enablePersonalDrift) {
+                buildWordTemplate32(compressedChars, spatialProfiles)
+            } else {
+                staticTemplate
+            }
+
+            val idealArcLen = computePairArcLength(adaptedTemplate)
+            // Reject words whose ideal path length is wildly different from the user's swipe length
+            val lengthRatio = if (idealArcLen > 0.05f) totalArcLength / idealArcLen else 1f
+            if (lengthRatio < 0.38f || lengthRatio > 2.35f) continue
+
+            val staticDtwDist = computeBandDtw(resampled32, staticTemplate)
+            val adaptedDtwDist = computeBandDtw(resampled32, adaptedTemplate)
+
+            // Start & End Gaussian Anchor Score (start key weighted slightly higher as users aim first key carefully)
+            val sigmaStart = 0.082f
+            val sigmaEnd = 0.092f
             val staticSpatial = 92f * (
-                0.55f * gaussianScore(staticStartDist, sigmaStart) +
-                    0.45f * gaussianScore(staticEndDist, sigmaEnd)
+                0.56f * gaussianScore(staticStartDist, sigmaStart) +
+                    0.44f * gaussianScore(staticEndDist, sigmaEnd)
+                )
+            val adaptedSpatial = 92f * (
+                0.56f * gaussianScore(adaptedStartDist, sigmaStart * (firstDrift?.radiusScale ?: 1f)) +
+                    0.44f * gaussianScore(adaptedEndDist, sigmaEnd * (lastDrift?.radiusScale ?: 1f))
                 )
 
-            val adaptedStartSigma = sigmaStart * (firstDrift?.radiusScale ?: 1f)
-            val adaptedEndSigma = sigmaEnd * (lastDrift?.radiusScale ?: 1f)
-            val adaptedSpatial = if (hyperparams.enablePersonalDrift) {
-                92f * (
-                    0.55f * gaussianScore(adaptedStartDist, adaptedStartSigma) +
-                        0.45f * gaussianScore(adaptedEndDist, adaptedEndSigma)
-                    )
-            } else {
-                staticSpatial
-            }
+            // Combine DTW curve distance + Monotonic key pass-through distance + Arc-length consistency
+            val lenDiff = abs(totalArcLength - idealArcLen) / max(0.16f, idealArcLen)
+            val lengthPenalty = (1f - 0.30f * lenDiff.coerceIn(0f, 1.4f)).coerceIn(0.55f, 1f)
 
-            // 2. Band-Constrained Dynamic Time Warping (DTW) Shape Score + Length Ratio Consistency
-            val staticDtwDist = computeBandDtw(resampled32, staticWordTemplate)
-            val adaptedDtwDist = computeBandDtw(resampled32, adaptedWordTemplate)
+            val staticCombinedCurveDist = 0.55f * staticDtwDist + 0.45f * staticMonotonicDist
+            val adaptedCombinedCurveDist = 0.55f * adaptedDtwDist + 0.45f * adaptedMonotonicDist
 
-            val idealArcLen = computePairArcLength(adaptedWordTemplate)
-            val lenDiff = abs(totalArcLength - idealArcLen) / max(0.18f, idealArcLen)
-            val lengthPenalty = (1f - 0.28f * lenDiff.coerceIn(0f, 1.5f)).coerceIn(0.55f, 1f)
+            val staticDtwScore = (92f * exp(-staticCombinedCurveDist * 14.8f) * lengthPenalty).coerceIn(0f, 92f)
+            val adaptedDtwScore = (92f * exp(-adaptedCombinedCurveDist * 14.8f) * lengthPenalty).coerceIn(0f, 92f)
 
-            val staticDtwScore = (90f * exp(-staticDtwDist * 14.5f) * lengthPenalty).coerceIn(0f, 92f)
-            val adaptedDtwScore = (90f * exp(-adaptedDtwDist * 14.5f) * lengthPenalty).coerceIn(0f, 92f)
-
-            // 3. Corner Inflection & Double-Letter Alignment Score
-            val wordHasDoubleLetters = hasConsecutiveDuplicateLetters(word)
-            val inflectionScore = computeInflectionAlignmentScore(
-                word = word,
+            // 6. Bidirectional Corner Inflection & Double-Letter Verification
+            val inflectionScore = computeBidirectionalInflectionScore(
+                compressedWord = compressedChars,
                 inflectionNodes = inflectionNodes,
                 spatialProfiles = if (hyperparams.enablePersonalDrift) spatialProfiles else emptyMap(),
                 hasDoubleLetterSignal = hasDoubleLetterSignal && hyperparams.enableDoubleLetterDetection,
                 wordHasDoubleLetters = wordHasDoubleLetters
             )
 
-            // Base lexical prior [0f..3.5f]
-            val lexicalPrior = (baseFreq - 150).coerceIn(0, 100) * 0.03f
+            // 7. Common-Word Frequency Prior (strong differentiation between everyday words and rare words)
+            // Tier 1 (230..255) -> +5.5..+8.0 pts; Tier 2 (200..229) -> +2.5..+5.4 pts; Rare (<190) -> 0 pts
+            val commonWordPrior = ((baseFreq - 175).coerceIn(0, 80) * 0.10f)
 
-            // Compute Baseline Static Score
             val baselineTotal = (
-                staticSpatial * 0.42f +
-                    staticDtwScore * 0.46f +
-                    inflectionScore * 0.12f +
-                    lexicalPrior
-                ).coerceIn(1f, 94.0f)
+                staticSpatial * 0.38f +
+                    staticDtwScore * 0.44f +
+                    inflectionScore * 0.18f +
+                    commonWordPrior
+                ).coerceIn(1f, 95.0f)
 
-            // 4. Contextual Bigram Boost P(word | prevContextWord)
-            var bigramBoost = 0f
-            if (hyperparams.enableContextBigrams && prevNorm.isNotEmpty()) {
-                val learnedCount = userBigrams[prevNorm to word]?.transitionCount ?: 0
-                val starterCount = FutoLexicon.starterBigrams[prevNorm to word] ?: 0
-                val totalTransitionWeight = learnedCount * 2.5f + starterCount * 1.2f
-                if (totalTransitionWeight > 0f) {
-                    bigramBoost = min(7.5f, totalTransitionWeight * 1.6f) * (hyperparams.contextBigramWeight / 0.12f)
-                }
-            }
-
-            // 5. Personal Unigram & Correction Priority Boost
+            // 8. Previously-Used Word Priority & Contextual Bigram Boost
             val userWordEntry = userWords[word]
-            val personalFreqBoost = if (userWordEntry != null) {
-                min(
-                    6.5f,
-                    userWordEntry.personalUseCount * 0.85f +
-                        userWordEntry.correctionSelectCount * 1.8f +
-                        (if (userWordEntry.isCustomWord) 3.0f else 0f)
-                )
+            val usedWordBoost = if (userWordEntry != null && (userWordEntry.personalUseCount > 0 || userWordEntry.isCustomWord)) {
+                // Logarithmic + linear boost so words the user has already used get strong priority!
+                val countBoost = 4.2f * ln(1f + userWordEntry.personalUseCount.toFloat()) +
+                    min(6.0f, userWordEntry.personalUseCount * 0.9f)
+                val correctionBoost = min(7.0f, userWordEntry.correctionSelectCount * 2.5f)
+                val customBoost = if (userWordEntry.isCustomWord) 4.0f else 0f
+                min(15.0f, countBoost + correctionBoost + customBoost)
             } else {
                 0f
             }
 
-            // 6. Personal Gesture Prototype Similarity Boost (16-point DTW against user's learned swipe signature)
+            var bigramBoost = 0f
+            if (hyperparams.enableContextBigrams && prevNorm.isNotEmpty()) {
+                val learnedTrans = userBigrams[prevNorm to word]?.transitionCount ?: 0
+                val starterTrans = FutoLexicon.starterBigrams[prevNorm to word] ?: 0
+                if (learnedTrans > 0 || starterTrans > 0) {
+                    val rawBoost = learnedTrans * 3.8f + starterTrans * 1.6f
+                    bigramBoost = min(11.0f, rawBoost) * (hyperparams.contextBigramWeight / 0.12f)
+                }
+            }
+
+            // 9. Personal 16-Point Gesture Prototype Similarity Boost
             var prototypeBoost = 0f
             if (hyperparams.enablePersonalPrototypes) {
                 val protoEntity = userPrototypes[word]
@@ -266,17 +297,15 @@ class GestureTypingEngine {
                     val protoPoints = decodePrototypePath(protoEntity.encodedNormalizedPath)
                     if (protoPoints.size == prototype16.size) {
                         val protoDist = computePairDtw(prototype16, protoPoints)
-                        // Strong similarity when protoDist < 0.065
-                        val protoSim = exp(-protoDist * 14.0f)
-                        if (protoSim > 0.52f) {
-                            val maturity = min(1f, protoEntity.sampleCount / 3f)
-                            prototypeBoost = (protoSim - 0.45f) * 10f * maturity
+                        val protoSim = exp(-protoDist * 14.5f)
+                        if (protoSim > 0.50f) {
+                            val maturity = min(1f, protoEntity.sampleCount / 2f)
+                            prototypeBoost = (protoSim - 0.45f) * 11f * maturity
                         }
                     }
                 }
             }
 
-            // Combine with user-tunable weights
             val weightSum = max(
                 0.01f,
                 hyperparams.spatialAnchorWeight +
@@ -290,21 +319,24 @@ class GestureTypingEngine {
             val coreAdaptive = adaptedSpatial * wSpatial +
                 adaptedDtwScore * wDtw +
                 inflectionScore * wInflect +
-                lexicalPrior
+                commonWordPrior
 
-            val spatialDriftGain = max(0f, (adaptedSpatial - staticSpatial) * wSpatial + (adaptedDtwScore - staticDtwScore) * wDtw)
-            val totalPersonalStyleBoost = spatialDriftGain + personalFreqBoost + prototypeBoost + bigramBoost
+            val spatialDriftGain = max(
+                0f,
+                (adaptedSpatial - staticSpatial) * wSpatial + (adaptedDtwScore - staticDtwScore) * wDtw
+            )
+            val totalPersonalBoost = spatialDriftGain + usedWordBoost + bigramBoost + prototypeBoost
 
-            val adaptiveTotal = (coreAdaptive + bigramBoost + personalFreqBoost + prototypeBoost)
+            val adaptiveTotal = (coreAdaptive + usedWordBoost + bigramBoost + prototypeBoost)
                 .coerceIn(1f, 99.8f)
 
-            val badge = buildExplanationBadge(
-                spatialDriftGain = spatialDriftGain,
-                bigramBoost = bigramBoost,
-                prototypeBoost = prototypeBoost,
-                personalFreqBoost = personalFreqBoost,
-                doubleLetterBonus = hasDoubleLetterSignal && wordHasDoubleLetters
-            )
+            val badge = when {
+                usedWordBoost >= 3.5f && bigramBoost >= 2.0f -> "Used + Context"
+                usedWordBoost >= 3.0f -> "Used (${userWordEntry?.personalUseCount ?: 1}x)"
+                bigramBoost >= 2.5f -> "Context"
+                prototypeBoost >= 2.0f -> "Learned Path"
+                else -> ""
+            }
 
             candidateList.add(
                 GestureCandidate(
@@ -315,7 +347,7 @@ class GestureTypingEngine {
                     dtwShapeScore = adaptedDtwScore,
                     inflectionMatchScore = inflectionScore,
                     contextBigramBoost = bigramBoost,
-                    personalStyleBoost = totalPersonalStyleBoost,
+                    personalStyleBoost = totalPersonalBoost,
                     explanationBadge = badge
                 )
             )
@@ -324,8 +356,8 @@ class GestureTypingEngine {
         val sortedByAdaptive = candidateList.sortedByDescending { it.adaptiveScore }.take(8)
         val sortedByStatic = candidateList.sortedByDescending { it.baselineStaticScore }
 
-        val staticTop = sortedByStatic.firstOrNull()?.word ?: ""
-        val adaptiveTop = sortedByAdaptive.firstOrNull()?.word ?: ""
+        val staticTop = sortedByStatic.firstOrNull()?.word.orEmpty()
+        val adaptiveTop = sortedByAdaptive.firstOrNull()?.word.orEmpty()
 
         return GestureDecodeResult(
             candidates = sortedByAdaptive,
@@ -341,156 +373,140 @@ class GestureTypingEngine {
         )
     }
 
-    private fun decodeTapSingleKey(
-        tappedChar: Char,
-        pt: RawTouchPoint,
-        prevContextWord: String,
-        hyperparams: DecoderHyperparameters,
-        spatialProfiles: Map<Char, KeySpatialProfileEntity>,
-        userWords: Map<String, UserWordFrequencyEntity>,
-        userBigrams: Map<Pair<String, String>, UserBigramEntity>
-    ): GestureDecodeResult {
-        val prefix = tappedChar.toString()
-        val prevNorm = prevContextWord.trim().lowercase()
-        val candidates = mutableListOf<GestureCandidate>()
-
-        // Include exact single-letter word if 'a' or 'i', plus top words starting with tappedChar
-        val pool = LinkedHashMap<String, Int>()
-        pool[prefix] = if (tappedChar == 'a' || tappedChar == 'i') 245 else 185
-        for ((w, freq) in FutoLexicon.defaultWordsWithFreq) {
-            if (w.startsWith(prefix)) pool[w] = freq
-        }
-        for ((w, entity) in userWords) {
-            if (w.startsWith(prefix)) pool[w] = max(pool[w] ?: 150, entity.baseFrequency + entity.personalUseCount * 10)
-        }
-
-        for ((word, freq) in pool) {
-            val baseScore = if (word == prefix) 88f else (60f + (freq - 180) * 0.35f).coerceIn(45f, 86f)
-            val bigramCount = if (prevNorm.isNotEmpty() && hyperparams.enableContextBigrams) {
-                (userBigrams[prevNorm to word]?.transitionCount ?: 0) * 2 +
-                    (FutoLexicon.starterBigrams[prevNorm to word] ?: 0)
-            } else 0
-            val bigramBoost = min(12f, bigramCount * 2.5f)
-            val personalBoost = (userWords[word]?.personalUseCount ?: 0) * 1.5f
-            val adaptiveScore = (baseScore + bigramBoost + personalBoost).coerceIn(10f, 99f)
-
-            candidates.add(
-                GestureCandidate(
-                    word = word,
-                    adaptiveScore = adaptiveScore,
-                    baselineStaticScore = baseScore,
-                    spatialAnchorScore = 92f,
-                    dtwShapeScore = 85f,
-                    inflectionMatchScore = 90f,
-                    contextBigramBoost = bigramBoost,
-                    personalStyleBoost = bigramBoost + personalBoost,
-                    explanationBadge = if (bigramBoost > 0f) "+Context Next" else "Tap Prefix"
-                )
-            )
+    /**
+     * Dynamic Programming Monotonic Key Alignment:
+     * Finds the minimum average Euclidean distance from each character in `compressedWord`
+     * to a non-decreasing sequence of trajectory points `0 = idx_0 <= idx_1 <= ... <= idx_{k-1} = N-1`.
+     * This guarantees the user's finger visited the word's letters in the right chronological order!
+     */
+    private fun computeMonotonicKeyAlignment(
+        compressedWord: String,
+        trajectory: List<NormalizedPoint>,
+        spatialProfiles: Map<Char, KeySpatialProfileEntity>
+    ): Float {
+        val k = compressedWord.length
+        val n = trajectory.size
+        if (k == 0 || n == 0) return 0f
+        if (k == 1) {
+            val g = qwertyKeys[compressedWord[0]] ?: return 0.1f
+            val drift = spatialProfiles[compressedWord[0]]
+            val kx = g.canonicalX + (drift?.driftX ?: 0f)
+            val ky = g.canonicalY + (drift?.driftY ?: 0f)
+            return trajectory.minOf { hypot(it.x - kx, it.y - ky) }
         }
 
-        val sorted = candidates.sortedByDescending { it.adaptiveScore }.take(6)
-        val normPt = NormalizedPoint(pt.x, pt.y, 0f, 0f, 0f, isInflection = true, isLoopOrDwell = false)
-        return GestureDecodeResult(
-            candidates = sorted,
-            smoothedPath = listOf(normPt),
-            prototype16Path = List(16) { pt.x to pt.y },
-            inflectionNodes = listOf(
-                InflectionNode(0, pt.x, pt.y, 0f, tappedChar, InflectionNode.NodeType.START)
-            ),
-            detectedDoubleLetterZone = false,
-            durationMs = 45L,
-            pathLengthNormalized = 0f,
-            staticTopWord = sorted.maxByOrNull { it.baselineStaticScore }?.word ?: prefix,
-            adaptiveTopWord = sorted.firstOrNull()?.word ?: prefix,
-            wasPromotedByAdaptation = false
-        )
+        val dp = FloatArray(k * n) { Float.POSITIVE_INFINITY }
+
+        // First character anchored at start of swipe (or first 3 samples)
+        val g0 = qwertyKeys[compressedWord[0]] ?: return 0.2f
+        val d0 = spatialProfiles[compressedWord[0]]
+        val k0x = g0.canonicalX + (d0?.driftX ?: 0f)
+        val k0y = g0.canonicalY + (d0?.driftY ?: 0f)
+        for (j in 0 until min(4, n)) {
+            dp[j] = hypot(trajectory[j].x - k0x, trajectory[j].y - k0y)
+        }
+
+        for (i in 1 until k) {
+            val ch = compressedWord[i]
+            val geom = qwertyKeys[ch] ?: continue
+            val drift = spatialProfiles[ch]
+            val kx = geom.canonicalX + (drift?.driftX ?: 0f)
+            val ky = geom.canonicalY + (drift?.driftY ?: 0f)
+
+            var runningMinPrev = dp[(i - 1) * n]
+            for (j in 0 until n) {
+                if (dp[(i - 1) * n + j] < runningMinPrev) {
+                    runningMinPrev = dp[(i - 1) * n + j]
+                }
+                val cost = hypot(trajectory[j].x - kx, trajectory[j].y - ky)
+                dp[i * n + j] = runningMinPrev + cost
+            }
+        }
+
+        // Last character must align near the end of the trajectory
+        var bestTotal = Float.POSITIVE_INFINITY
+        for (j in max(0, n - 4) until n) {
+            bestTotal = min(bestTotal, dp[(k - 1) * n + j])
+        }
+        return bestTotal / k.toFloat()
     }
 
-    private fun buildExplanationBadge(
-        spatialDriftGain: Float,
-        bigramBoost: Float,
-        prototypeBoost: Float,
-        personalFreqBoost: Float,
-        doubleLetterBonus: Boolean
-    ): String {
-        val parts = mutableListOf<String>()
-        if (prototypeBoost >= 2.2f) parts.add("Prototype")
-        if (spatialDriftGain >= 1.5f) parts.add("KeyDrift")
-        if (bigramBoost >= 2.0f) parts.add("N-Gram")
-        if (personalFreqBoost >= 2.0f) parts.add("UserLex")
-        if (doubleLetterBonus) parts.add("2xLetter")
-        return if (parts.isEmpty()) "DTW+Anchor" else "+" + parts.take(2).joinToString("+")
-    }
-
-    private fun computeInflectionAlignmentScore(
-        word: String,
+    /**
+     * Bidirectional Corner Inflection Scoring:
+     * 1. Every sharp corner turn made by the user's finger should be close to one of the word's keys.
+     * 2. Every sharp turn required by the word's key sequence should be close to the user's trajectory.
+     */
+    private fun computeBidirectionalInflectionScore(
+        compressedWord: String,
         inflectionNodes: List<InflectionNode>,
         spatialProfiles: Map<Char, KeySpatialProfileEntity>,
         hasDoubleLetterSignal: Boolean,
         wordHasDoubleLetters: Boolean
     ): Float {
-        if (word.length <= 2) {
-            val doubleBonus = if (hasDoubleLetterSignal && wordHasDoubleLetters) 10f else 0f
-            return (84f + doubleBonus).coerceAtMost(100f)
-        }
+        val userCorners = inflectionNodes.filter { it.nodeType == InflectionNode.NodeType.CORNER }
 
-        val cornerNodes = inflectionNodes.filter { it.nodeType == InflectionNode.NodeType.CORNER }
-        if (cornerNodes.isEmpty()) {
-            // Smooth straight swipe: reward words whose keys are roughly collinear
-            val wordCollinearity = measureWordCollinearity(word)
-            val base = 72f + wordCollinearity * 22f
-            return if (hasDoubleLetterSignal && wordHasDoubleLetters) min(100f, base + 9f) else base
-        }
-
-        // For each detected user corner inflection, find how close it lands to any interior character of `word`
-        var totalCornerScore = 0f
-        for (node in cornerNodes) {
-            var minCharDist = Float.MAX_VALUE
-            for (i in 1 until word.length - 1) {
-                val ch = word[i]
-                val geom = qwertyKeys[ch] ?: continue
-                val drift = spatialProfiles[ch]
-                val kx = geom.canonicalX + (drift?.driftX ?: 0f)
-                val ky = geom.canonicalY + (drift?.driftY ?: 0f)
-                val d = hypot(node.x - kx, node.y - ky)
-                if (d < minCharDist) minCharDist = d
+        // Part A: Do user corners land near characters of the word?
+        var userCornerMatch = 1f
+        if (userCorners.isNotEmpty() && compressedWord.length >= 2) {
+            var sum = 0f
+            for (node in userCorners) {
+                var minCharDist = Float.MAX_VALUE
+                for (ch in compressedWord) {
+                    val geom = qwertyKeys[ch] ?: continue
+                    val drift = spatialProfiles[ch]
+                    val kx = geom.canonicalX + (drift?.driftX ?: 0f)
+                    val ky = geom.canonicalY + (drift?.driftY ?: 0f)
+                    val d = hypot(node.x - kx, node.y - ky)
+                    if (d < minCharDist) minCharDist = d
+                }
+                sum += gaussianScore(minCharDist, 0.125f)
             }
-            totalCornerScore += gaussianScore(minCharDist, 0.135f)
+            userCornerMatch = sum / userCorners.size
         }
 
-        var score = 100f * (totalCornerScore / cornerNodes.size)
+        // Part B: Count how many sharp turns the word template itself has
+        var wordCornerCount = 0
+        if (compressedWord.length >= 3) {
+            for (i in 1 until compressedWord.length - 1) {
+                val p = qwertyKeys[compressedWord[i - 1]] ?: continue
+                val c = qwertyKeys[compressedWord[i]] ?: continue
+                val n = qwertyKeys[compressedWord[i + 1]] ?: continue
+                val v1x = c.canonicalX - p.canonicalX
+                val v1y = c.canonicalY - p.canonicalY
+                val v2x = n.canonicalX - c.canonicalX
+                val v2y = n.canonicalY - c.canonicalY
+                val m1 = hypot(v1x, v1y)
+                val m2 = hypot(v2x, v2y)
+                if (m1 > 1e-3f && m2 > 1e-3f) {
+                    val cosA = ((v1x * v2x + v1y * v2y) / (m1 * m2)).coerceIn(-1f, 1f)
+                    val deg = Math.toDegrees(acos(cosA.toDouble())).toFloat()
+                    if (deg >= 42f) wordCornerCount++
+                }
+            }
+        }
+
+        val cornerCountDiff = abs(userCorners.size - wordCornerCount)
+        val countAgreement = exp(-cornerCountDiff * 0.22f)
+
+        var score = 92f * (0.68f * userCornerMatch + 0.32f * countAgreement)
         if (hasDoubleLetterSignal && wordHasDoubleLetters) {
-            score = min(100f, score + 11.5f)
+            score = min(98f, score + 8f)
         } else if (!hasDoubleLetterSignal && wordHasDoubleLetters) {
-            // Slight penalty Only if a non-double-letter competitor is identical path (e.g. to vs too)
-            score = max(40f, score - 3.5f)
+            score = max(45f, score - 2.5f)
         }
-        return score.coerceIn(0f, 100f)
+        return score.coerceIn(0f, 98f)
     }
 
-    private fun measureWordCollinearity(word: String): Float {
-        if (word.length <= 2) return 1f
-        val first = qwertyKeys[word.first()] ?: return 0.5f
-        val last = qwertyKeys[word.last()] ?: return 0.5f
-        val dx = last.canonicalX - first.canonicalX
-        val dy = last.canonicalY - first.canonicalY
-        val segLen = hypot(dx, dy)
-        if (segLen < 0.05f) return 0.3f
-
-        var maxDeviation = 0f
-        for (i in 1 until word.length - 1) {
-            val g = qwertyKeys[word[i]] ?: continue
-            // Perpendicular distance from point to line (first -> last)
-            val dev = abs(dy * g.canonicalX - dx * g.canonicalY + last.canonicalX * first.canonicalY - last.canonicalY * first.canonicalX) / segLen
-            if (dev > maxDeviation) maxDeviation = dev
+    private fun compressConsecutiveDuplicates(word: String): String {
+        if (word.length <= 1) return word
+        val sb = StringBuilder(word.length)
+        sb.append(word[0])
+        for (i in 1 until word.length) {
+            if (word[i] != word[i - 1]) sb.append(word[i])
         }
-        return exp(-maxDeviation * 5.0f).coerceIn(0f, 1f)
+        return sb.toString()
     }
 
-    /**
-     * Generates a 32-point equidistant polygonal template along the key centers of `word`.
-     */
     fun buildWordTemplate32(
         word: String,
         spatialProfiles: Map<Char, KeySpatialProfileEntity>,
@@ -511,10 +527,6 @@ class GestureTypingEngine {
         return resamplePairsEquidistant(vertices, targetCount)
     }
 
-    /**
-     * Sakoe-Chiba band-constrained Dynamic Time Warping distance between 32-point user swipe
-     * and 32-point word template.
-     */
     private fun computeBandDtw(
         userPoints: List<NormalizedPoint>,
         templatePoints: List<Pair<Float, Float>>
@@ -568,12 +580,8 @@ class GestureTypingEngine {
         return dp[n * (m + 1) + m] / (n + m).toFloat()
     }
 
-    /**
-     * Savitzky-Golay / 3-tap weighted trajectory smoothing that preserves endpoints and sharp turns.
-     */
     private fun smoothTrajectory(raw: List<RawTouchPoint>): List<RawTouchPoint> {
         if (raw.size <= 3) return raw
-        // Filter duplicate points closer than 0.004 normalized distance
         val dedup = mutableListOf(raw.first())
         for (i in 1 until raw.size) {
             val p = raw[i]
@@ -608,7 +616,6 @@ class GestureTypingEngine {
         val pairs = points.map { it.x to it.y }
         val resampledCoords = resamplePairsEquidistant(pairs, targetCount)
 
-        // Compute turning angle and local velocity along resampled nodes
         val velocities = FloatArray(targetCount)
         val angles = FloatArray(targetCount)
 
@@ -629,7 +636,6 @@ class GestureTypingEngine {
                 angles[i] = Math.toDegrees(acos(cosTheta.toDouble())).toFloat()
             }
 
-            // Map index back to raw timestamps to estimate local velocity
             val rawIdx = ((i.toFloat() / (targetCount - 1)) * (points.size - 1)).toInt().coerceIn(1, points.lastIndex)
             val dt = max(1L, points[rawIdx].timestampMs - points[rawIdx - 1].timestampMs)
             val ds = hypot(points[rawIdx].x - points[rawIdx - 1].x, points[rawIdx].y - points[rawIdx - 1].y)
@@ -644,12 +650,12 @@ class GestureTypingEngine {
         val result = mutableListOf<NormalizedPoint>()
         for (i in 0 until targetCount) {
             val isCorner = i in 2..(targetCount - 3) &&
-                angles[i] >= 31f &&
+                angles[i] >= 32f &&
                 angles[i] >= angles[i - 1] &&
                 angles[i] >= angles[i + 1]
 
             val isDwellOrLoop = i in 2..(targetCount - 3) &&
-                (velocities[i] < avgVelocity * 0.36f || angles[i] >= 115f)
+                (velocities[i] < avgVelocity * 0.35f || angles[i] >= 115f)
 
             result.add(
                 NormalizedPoint(
@@ -782,13 +788,6 @@ class GestureTypingEngine {
             sum += hypot(pts[i].first - pts[i - 1].first, pts[i].second - pts[i - 1].second)
         }
         return sum
-    }
-
-    private fun hasConsecutiveDuplicateLetters(word: String): Boolean {
-        for (i in 1 until word.length) {
-            if (word[i] == word[i - 1]) return true
-        }
-        return false
     }
 
     fun encodePrototypePath(points: List<Pair<Float, Float>>): String {

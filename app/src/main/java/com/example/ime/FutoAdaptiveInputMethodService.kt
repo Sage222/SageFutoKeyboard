@@ -14,6 +14,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
@@ -38,12 +41,9 @@ import com.example.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.launch
 
 /**
- * Full-featured Android System InputMethodService (IME) based on FUTO Keyboard architecture.
- * Supports:
- * - True tap-typing with InputConnection composing text, prefix completions, and typo auto-correction
- * - Continuous gesture swipe typing with live floating preview and single-backspace gesture undo
- * - Continuous on-device style learning (spatial key drift, 16-pt prototypes, and bigrams)
- *   including automatic learning when a user backspaces a swiped word and types/swipes the intended word.
+ * System-wide Android InputMethodService (IME) modeled on FUTO Keyboard (LatinIME),
+ * with improved swipe gesture recognition and automatic prioritization of words
+ * the user has already used.
  */
 class FutoAdaptiveInputMethodService :
     InputMethodService(),
@@ -80,7 +80,7 @@ class FutoAdaptiveInputMethodService :
         repository = AdaptiveStyleRepository(db.adaptiveStyleDao())
     }
 
-    override fun onStartInputView( editorInfo: EditorInfo?, restarting: Boolean) {
+    override fun onStartInputView(editorInfo: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(editorInfo, restarting)
         composingBuffer = ""
         justCommittedGestureWord = false
@@ -115,14 +115,35 @@ class FutoAdaptiveInputMethodService :
         prevContextWord = words.lastOrNull()?.lowercase()?.filter { it in 'a'..'z' }.orEmpty()
     }
 
+    /**
+     * Queries the Android system `navigation_bar_height` dimension so the IME window
+     * never sits underneath the 3-button or gesture navigation bar.
+     */
+    private fun getSystemNavigationBarClearanceDp(): Dp {
+        val resId = resources.getIdentifier("navigation_bar_height", "dimen", "android")
+        if (resId > 0) {
+            val px = resources.getDimensionPixelSize(resId)
+            val density = resources.displayMetrics.density.coerceAtLeast(1f)
+            val dpVal = (px / density).dp
+            if (dpVal >= 16.dp) return dpVal
+        }
+        return 48.dp
+    }
+
     override fun onCreateInputView(): View {
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
+
+        window?.window?.let { win ->
+            WindowCompat.setDecorFitsSystemWindows(win, true)
+        }
 
         val decorView = window?.window?.decorView
         decorView?.setViewTreeLifecycleOwner(this)
         decorView?.setViewTreeViewModelStoreOwner(this)
         decorView?.setViewTreeSavedStateRegistryOwner(this)
+
+        val navClearanceDp = getSystemNavigationBarClearanceDp()
 
         return ComposeView(this).apply {
             setViewTreeLifecycleOwner(this@FutoAdaptiveInputMethodService)
@@ -151,7 +172,6 @@ class FutoAdaptiveInputMethodService :
                     }
 
                     var lastDecodeResult by remember { mutableStateOf<GestureDecodeResult?>(null) }
-                    var showDriftOverlay by remember { mutableStateOf(false) }
                     val hyperparams = remember { DecoderHyperparameters() }
 
                     val activeCandidates = remember(
@@ -181,10 +201,11 @@ class FutoAdaptiveInputMethodService :
                         candidates = activeCandidates,
                         composingWord = composingBuffer,
                         lastDecodeResult = if (justCommittedGestureWord) lastDecodeResult else null,
-                        showDriftOverlay = showDriftOverlay,
-                        showNumberRow = true,
+                        showDriftOverlay = false,
+                        showNumberRow = false,
                         shiftState = shiftState,
                         imeActionType = currentImeAction,
+                        extraBottomNavClearance = navClearanceDp,
                         onToggleShift = {
                             val now = SystemClock.uptimeMillis()
                             shiftState = when {
@@ -194,7 +215,6 @@ class FutoAdaptiveInputMethodService :
                             }
                             lastShiftTapMs = now
                         },
-                        onToggleDriftOverlay = { showDriftOverlay = !showDriftOverlay },
                         onOpenSettings = {
                             val intent = Intent(this@FutoAdaptiveInputMethodService, MainActivity::class.java).apply {
                                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -212,7 +232,6 @@ class FutoAdaptiveInputMethodService :
                                     shiftState = ShiftState.OFF
                                 }
                             } else {
-                                // Digit or symbol: commit any composing word first, then commit character
                                 if (composingBuffer.isNotEmpty()) {
                                     commitComposingWordAndLearn(
                                         wordToCommit = composingBuffer,
@@ -258,7 +277,6 @@ class FutoAdaptiveInputMethodService :
                             val topWord = result.candidates.firstOrNull()?.word ?: return@FutoGestureKeyboardView
                             val formatted = applyShiftFormatting(topWord, shiftState)
 
-                            // Smart leading space if needed
                             val before = ic.getTextBeforeCursor(2, 0)?.toString().orEmpty()
                             val needsLeadingSpace = before.isNotEmpty() && !before.last().isWhitespace() && before.last() != '(' && before.last() != '"'
                             val prefixSpace = if (needsLeadingSpace) " " else ""
@@ -301,7 +319,7 @@ class FutoAdaptiveInputMethodService :
                                 justCommittedGestureWord = false
 
                                 scope.launch {
-                                    repository.addCustomVocabularyWord(candidate.word, contextForLearn)
+                                    repository.recordUsedWord(candidate.word, contextForLearn)
                                 }
                             } else if (justCommittedGestureWord && lastCommittedWord.isNotEmpty()) {
                                 if (isCorrection) {
@@ -326,12 +344,15 @@ class FutoAdaptiveInputMethodService :
                                     }
                                 }
                             } else {
-                                // Next-word suggestion tap when buffer is empty
                                 val formatted = applyShiftFormatting(candidate.word, shiftState)
                                 ic.commitText("$formatted ", 1)
+                                val contextForLearn = prevContextWord
                                 prevContextWord = candidate.word.lowercase()
                                 lastCommittedWord = formatted
                                 if (shiftState == ShiftState.ONE_SHOT) shiftState = ShiftState.OFF
+                                scope.launch {
+                                    repository.recordUsedWord(candidate.word, contextForLearn)
+                                }
                             }
                         },
                         onBackspace = {
@@ -345,8 +366,6 @@ class FutoAdaptiveInputMethodService :
                                     updateAutoShiftFromInputConnection()
                                 }
                             } else if (justCommittedGestureWord && lastCommittedWord.isNotEmpty()) {
-                                // FUTO / LatinIME behavior: single backspace right after a swipe
-                                // deletes the entire swiped word and arms correction learning!
                                 ic.deleteSurroundingText(lastCommittedWord.length + 1, 0)
                                 rejectedGestureDecode = lastDecodeResult
                                 lastCommittedWord = ""
@@ -369,7 +388,6 @@ class FutoAdaptiveInputMethodService :
                                     scope = scope
                                 )
                             } else if ((now - lastSpaceTapMs) < 350L) {
-                                // Double-space period shortcut
                                 val before = ic.getTextBeforeCursor(2, 0)?.toString().orEmpty()
                                 if (before.endsWith(" ") && before.length >= 2 && before[0].isLetterOrDigit()) {
                                     ic.deleteSurroundingText(1, 0)
@@ -393,7 +411,6 @@ class FutoAdaptiveInputMethodService :
                                     scope = scope
                                 )
                             } else if (justCommittedGestureWord) {
-                                // Strip trailing auto-space before punctuation
                                 val before = ic.getTextBeforeCursor(1, 0)?.toString().orEmpty()
                                 if (before == " ") {
                                     ic.deleteSurroundingText(1, 0)
@@ -453,7 +470,6 @@ class FutoAdaptiveInputMethodService :
 
         scope.launch {
             if (pendingRejected != null && clean.isNotEmpty()) {
-                // User rejected a gesture via Backspace and typed the intended word manually!
                 repository.learnFromCommittedGesture(
                     committedWord = clean,
                     prevContextWord = contextForLearn,
@@ -462,7 +478,7 @@ class FutoAdaptiveInputMethodService :
                     isExplicitUserCorrection = true
                 )
             } else if (clean.isNotEmpty()) {
-                repository.addCustomVocabularyWord(clean, contextForLearn)
+                repository.recordUsedWord(clean, contextForLearn)
             }
         }
     }

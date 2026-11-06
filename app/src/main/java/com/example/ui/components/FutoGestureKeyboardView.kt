@@ -4,32 +4,31 @@ import android.os.SystemClock
 import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.automirrored.filled.KeyboardReturn
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.KeyboardCapslock
-import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
@@ -49,13 +48,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -64,22 +63,21 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.max
 import androidx.compose.ui.unit.sp
 import com.example.data.KeySpatialProfileEntity
 import com.example.engine.GestureCandidate
 import com.example.engine.GestureDecodeResult
-import com.example.engine.InflectionNode
 import com.example.engine.KeyGeometry
 import com.example.engine.RawTouchPoint
-import com.example.ui.theme.AdaptiveAmber
-import com.example.ui.theme.FutoKeyCapBorder
 import com.example.ui.theme.FutoKeyCapSpecial
 import com.example.ui.theme.FutoKeyCapSurface
 import com.example.ui.theme.FutoSlateBg
 import com.example.ui.theme.FutoSurface
 import com.example.ui.theme.JetBrainsMonoFamily
-import com.example.ui.theme.NeuralEmerald
 import com.example.ui.theme.SpaceGroteskFamily
 import com.example.ui.theme.TelemetryCyan
 import com.example.ui.theme.TextMuted
@@ -114,11 +112,14 @@ private val topRowNumberHints = mapOf(
 )
 
 /**
- * Production-grade FUTO Adaptive Keyboard View supporting:
- * - True Tap Typing (character composition, auto-correct, prefix completions, long-press numbers)
- * - Continuous Bezier Swipe Gesture Typing with real-time floating word preview
- * - Full `?123` Symbols & `=\<` Extended Symbols layouts + optional Dedicated Number Row
- * - Learned Per-Key Spatial Drift overlay & Supervised Candidate Correction learning
+ * Authentic FUTO Keyboard / LatinIME layout:
+ * - 3-slot Suggestion Strip at top (2nd candidate | 1st Primary candidate | 3rd candidate)
+ * - Optional Number Row (1..0)
+ * - Row 1: q w e r t y u i o p
+ * - Row 2: a s d f g h j k l
+ * - Row 3: [Shift] z x c v b n m [Backspace]
+ * - Row 4: [?123] [,] [     Spacebar     ] [.] [Enter/Action]
+ * - Explicit bottom navigation-bar clearance so the keyboard never sits under Android navigation buttons.
  */
 @Composable
 fun FutoGestureKeyboardView(
@@ -127,12 +128,13 @@ fun FutoGestureKeyboardView(
     candidates: List<GestureCandidate>,
     composingWord: String,
     lastDecodeResult: GestureDecodeResult?,
-    showDriftOverlay: Boolean,
-    showNumberRow: Boolean = true,
+    showDriftOverlay: Boolean = false,
+    showNumberRow: Boolean = false,
     shiftState: ShiftState = ShiftState.OFF,
     imeActionType: ImeActionType = ImeActionType.RETURN,
+    extraBottomNavClearance: Dp = 0.dp,
     onToggleShift: () -> Unit,
-    onToggleDriftOverlay: () -> Unit,
+    onToggleDriftOverlay: () -> Unit = {},
     onOpenSettings: (() -> Unit)? = null,
     onKeyTap: (Char) -> Unit,
     onGesturePreview: ((List<RawTouchPoint>) -> String?)? = null,
@@ -148,32 +150,30 @@ fun FutoGestureKeyboardView(
     var layoutMode by remember { mutableStateOf(KeyboardLayoutMode.ALPHABET) }
     val activeTrail = remember { mutableStateListOf<RawTouchPoint>() }
     var hoveredKey by remember { mutableStateOf<Char?>(null) }
+    var isShiftPressedVisual by remember { mutableStateOf(false) }
+    var isBackspacePressedVisual by remember { mutableStateOf(false) }
     var isSwipingGesture by remember { mutableStateOf(false) }
     var liveSwipePreviewWord by remember { mutableStateOf<String?>(null) }
 
     val textMeasurer = rememberTextMeasurer()
 
+    // Guarantee clearance above Android system navigation bar (3-button or gesture bar)
+    val navInsetsBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val safeBottomPadding = max(navInsetsBottom, extraBottomNavClearance)
+
     Column(
         modifier = modifier
             .fillMaxWidth()
             .background(FutoSurface)
-            .border(width = 1.dp, color = FutoKeyCapBorder.copy(alpha = 0.6f))
-            .padding(bottom = 4.dp)
+            .padding(bottom = safeBottomPadding + 6.dp)
             .testTag("futo_gesture_keyboard")
     ) {
-        // 1. Suggestion Strip (Candidates + Composing Word + Settings/Drift Quick Icons)
-        CandidateSuggestionToolbar(
+        // 1. Classic FUTO / LatinIME 3-Slot Suggestion Strip
+        LatinImeSuggestionStrip(
             candidates = candidates,
             composingWord = composingWord,
-            wasPromotedByAdaptation = lastDecodeResult?.wasPromotedByAdaptation == true,
             isSwiping = isSwipingGesture,
             liveSwipePreviewWord = liveSwipePreviewWord,
-            hoveredKey = hoveredKey,
-            showDriftOverlay = showDriftOverlay,
-            onToggleDriftOverlay = {
-                view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                onToggleDriftOverlay()
-            },
             onOpenSettings = onOpenSettings,
             onCandidateClick = { candidate, index ->
                 view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
@@ -181,12 +181,12 @@ fun FutoGestureKeyboardView(
             }
         )
 
-        // 2. Optional Dedicated Number Row (1 2 3 4 5 6 7 8 9 0)
+        // 2. Optional Number Row (1 2 3 4 5 6 7 8 9 0)
         if (showNumberRow && layoutMode == KeyboardLayoutMode.ALPHABET) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(36.dp)
+                    .height(38.dp)
                     .padding(horizontal = 4.dp, vertical = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
@@ -197,8 +197,7 @@ fun FutoGestureKeyboardView(
                             .weight(1f)
                             .fillMaxSize()
                             .clip(RoundedCornerShape(6.dp))
-                            .background(FutoKeyCapSpecial)
-                            .border(1.dp, FutoKeyCapBorder.copy(alpha = 0.7f), RoundedCornerShape(6.dp))
+                            .background(FutoKeyCapSurface)
                             .clickable {
                                 view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                                 onKeyTap(d)
@@ -207,38 +206,73 @@ fun FutoGestureKeyboardView(
                     ) {
                         Text(
                             text = d.toString(),
-                            style = MaterialTheme.typography.labelLarge,
+                            style = MaterialTheme.typography.bodyLarge,
                             color = TextPrimary,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Medium
                         )
                     }
                 }
             }
         }
 
-        // 3. Main Keyboard Body (Alphabet Gesture Canvas OR Symbols Grid)
+        // 3. Main 3-Row Keyboard Area (Alphabet with Shift/Backspace on Row 3, or Symbols)
         when (layoutMode) {
             KeyboardLayoutMode.ALPHABET -> {
                 BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(166.dp)
-                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                        .height(168.dp)
+                        .padding(horizontal = 3.dp, vertical = 2.dp)
                         .testTag("gesture_letter_canvas")
-                        .semantics { contentDescription = "QWERTY keyboard and gesture typing area" }
+                        .semantics { contentDescription = "QWERTY keyboard area" }
                         .pointerInput(keyGeometries, spatialProfiles, shiftState) {
                             val widthPx = size.width.toFloat().coerceAtLeast(1f)
                             val heightPx = size.height.toFloat().coerceAtLeast(1f)
 
                             awaitEachGesture {
                                 val down = awaitFirstDown(requireUnconsumed = false)
+                                val startX = (down.position.x / widthPx).coerceIn(0.005f, 0.995f)
+                                val startY = (down.position.y / heightPx).coerceIn(0.005f, 0.995f)
+                                val startMs = SystemClock.uptimeMillis()
+
+                                // Check if touch started on Row 3 Shift [x < 0.145, y > 0.66] or Backspace [x > 0.855, y > 0.66]
+                                val startedOnShift = startY >= 0.66f && startX <= 0.145f
+                                val startedOnBackspace = startY >= 0.66f && startX >= 0.855f
+
+                                if (startedOnShift) {
+                                    isShiftPressedVisual = true
+                                    view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                    do {
+                                        val event = awaitPointerEvent()
+                                        event.changes.forEach { it.consume() }
+                                    } while (event.changes.any { it.pressed })
+                                    isShiftPressedVisual = false
+                                    onToggleShift()
+                                    return@awaitEachGesture
+                                }
+
+                                if (startedOnBackspace) {
+                                    isBackspacePressedVisual = true
+                                    view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                    onBackspace()
+                                    var lastRepeatMs = startMs
+                                    do {
+                                        val event = awaitPointerEvent()
+                                        val now = SystemClock.uptimeMillis()
+                                        if (now - startMs > 400L && now - lastRepeatMs > 75L) {
+                                            onBackspace()
+                                            lastRepeatMs = now
+                                        }
+                                        event.changes.forEach { it.consume() }
+                                    } while (event.changes.any { it.pressed })
+                                    isBackspacePressedVisual = false
+                                    return@awaitEachGesture
+                                }
+
+                                // Otherwise touch started on one of the 26 letter keys
                                 activeTrail.clear()
                                 isSwipingGesture = false
                                 liveSwipePreviewWord = null
-
-                                val startX = (down.position.x / widthPx).coerceIn(0.01f, 0.99f)
-                                val startY = (down.position.y / heightPx).coerceIn(0.01f, 0.99f)
-                                val startMs = SystemClock.uptimeMillis()
 
                                 activeTrail.add(RawTouchPoint(startX, startY, startMs))
                                 val initialKey = findClosestKey(startX, startY, keyGeometries, spatialProfiles)
@@ -285,10 +319,9 @@ fun FutoGestureKeyboardView(
                                 liveSwipePreviewWord = null
                                 activeTrail.clear()
 
-                                // Distinguish Tap vs. Long-Press Number vs. Continuous Swipe Gesture!
                                 if (totalPathDistance < 0.075f) {
                                     val altDigit = topRowNumberHints[finalKey]
-                                    if (holdDurationMs >= 360L && altDigit != null) {
+                                    if (holdDurationMs >= 350L && altDigit != null) {
                                         view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                                         onKeyTap(altDigit)
                                     } else {
@@ -308,41 +341,104 @@ fun FutoGestureKeyboardView(
                     Canvas(modifier = Modifier.fillMaxSize()) {
                         val canvasW = size.width
                         val canvasH = size.height
+                        val keyPadX = canvasW * 0.006f
+                        val keyPadY = canvasH * 0.024f
+                        val rowH = canvasH / 3f
 
+                        // Draw Row 3 Left Special Key: SHIFT [0.0 .. 0.135]
+                        val shiftW = canvasW * 0.135f - keyPadX * 2f
+                        val shiftH = rowH - keyPadY * 2f
+                        val shiftLeft = keyPadX
+                        val shiftTop = rowH * 2f + keyPadY
+                        val shiftActive = shiftState != ShiftState.OFF || isShiftPressedVisual
+                        drawRoundRect(
+                            color = Color.Black.copy(alpha = 0.35f),
+                            topLeft = Offset(shiftLeft, shiftTop + 2.5f),
+                            size = Size(shiftW, shiftH),
+                            cornerRadius = CornerRadius(14f, 14f)
+                        )
+                        drawRoundRect(
+                            color = if (shiftActive) TelemetryCyan.copy(alpha = 0.25f) else FutoKeyCapSpecial,
+                            topLeft = Offset(shiftLeft, shiftTop),
+                            size = Size(shiftW, shiftH),
+                            cornerRadius = CornerRadius(14f, 14f)
+                        )
+                        val shiftSymbol = if (shiftState == ShiftState.CAPS_LOCK) "⇪" else "⇧"
+                        val shiftText = textMeasurer.measure(
+                            text = shiftSymbol,
+                            style = TextStyle(
+                                fontFamily = SpaceGroteskFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 20.sp,
+                                color = if (shiftState != ShiftState.OFF) TelemetryCyan else TextPrimary
+                            )
+                        )
+                        drawText(
+                            textLayoutResult = shiftText,
+                            topLeft = Offset(
+                                shiftLeft + shiftW / 2f - shiftText.size.width / 2f,
+                                shiftTop + shiftH / 2f - shiftText.size.height / 2f
+                            )
+                        )
+
+                        // Draw Row 3 Right Special Key: BACKSPACE [0.865 .. 1.0]
+                        val bsW = canvasW * 0.135f - keyPadX * 2f
+                        val bsH = rowH - keyPadY * 2f
+                        val bsLeft = canvasW * 0.865f + keyPadX
+                        val bsTop = rowH * 2f + keyPadY
+                        drawRoundRect(
+                            color = Color.Black.copy(alpha = 0.35f),
+                            topLeft = Offset(bsLeft, bsTop + 2.5f),
+                            size = Size(bsW, bsH),
+                            cornerRadius = CornerRadius(14f, 14f)
+                        )
+                        drawRoundRect(
+                            color = if (isBackspacePressedVisual) TelemetryCyan.copy(alpha = 0.25f) else FutoKeyCapSpecial,
+                            topLeft = Offset(bsLeft, bsTop),
+                            size = Size(bsW, bsH),
+                            cornerRadius = CornerRadius(14f, 14f)
+                        )
+                        val bsText = textMeasurer.measure(
+                            text = "⌫",
+                            style = TextStyle(
+                                fontFamily = SpaceGroteskFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp,
+                                color = TextPrimary
+                            )
+                        )
+                        drawText(
+                            textLayoutResult = bsText,
+                            topLeft = Offset(
+                                bsLeft + bsW / 2f - bsText.size.width / 2f,
+                                bsTop + bsH / 2f - bsText.size.height / 2f
+                            )
+                        )
+
+                        // Draw all 26 QWERTY letter keys
                         for ((ch, geom) in keyGeometries) {
-                            val profile = spatialProfiles[ch]
                             val isHovered = hoveredKey == ch
-                            val keyPadX = canvasW * 0.0055f
-                            val keyPadY = canvasH * 0.022f
                             val left = (geom.canonicalX - geom.width / 2f) * canvasW + keyPadX
                             val top = (geom.canonicalY - geom.height / 2f) * canvasH + keyPadY
                             val kw = geom.width * canvasW - keyPadX * 2f
                             val kh = geom.height * canvasH - keyPadY * 2f
 
-                            // Keycap shadow & surface
                             drawRoundRect(
-                                color = Color.Black.copy(alpha = 0.45f),
-                                topLeft = Offset(left, top + 3f),
+                                color = Color.Black.copy(alpha = 0.35f),
+                                topLeft = Offset(left, top + 2.5f),
                                 size = Size(kw, kh),
                                 cornerRadius = CornerRadius(14f, 14f)
                             )
                             drawRoundRect(
-                                color = if (isHovered) TelemetryCyan.copy(alpha = 0.28f) else FutoKeyCapSurface,
+                                color = if (isHovered) Color(0xFF3E4550) else FutoKeyCapSurface,
                                 topLeft = Offset(left, top),
                                 size = Size(kw, kh),
                                 cornerRadius = CornerRadius(14f, 14f)
-                            )
-                            drawRoundRect(
-                                color = if (isHovered) TelemetryCyan else FutoKeyCapBorder,
-                                topLeft = Offset(left, top),
-                                size = Size(kw, kh),
-                                cornerRadius = CornerRadius(14f, 14f),
-                                style = Stroke(width = if (isHovered) 3.5f else 1.5f)
                             )
 
-                            // Secondary number hint in top-right corner of Q..P
+                            // Subtle top-row number hint (1..0 on q..p)
                             val hintDigit = topRowNumberHints[ch]
-                            if (hintDigit != null) {
+                            if (hintDigit != null && !showNumberRow) {
                                 val hintLayout = textMeasurer.measure(
                                     text = hintDigit.toString(),
                                     style = TextStyle(
@@ -360,15 +456,14 @@ fun FutoGestureKeyboardView(
                                 )
                             }
 
-                            // Main character label
                             val displayChar = if (shiftState != ShiftState.OFF) ch.uppercase() else ch.toString()
                             val textLayout = textMeasurer.measure(
                                 text = displayChar,
                                 style = TextStyle(
                                     fontFamily = SpaceGroteskFamily,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 18.sp,
-                                    color = if (isHovered) TelemetryCyan else TextPrimary
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 19.sp,
+                                    color = TextPrimary
                                 )
                             )
                             drawText(
@@ -378,30 +473,9 @@ fun FutoGestureKeyboardView(
                                     y = geom.canonicalY * canvasH - textLayout.size.height / 2f
                                 )
                             )
-
-                            // Learned Spatial Drift Vector Overlay on Keycaps
-                            if (showDriftOverlay && profile != null && profile.hitCount > 0) {
-                                val cx = geom.canonicalX * canvasW
-                                val cy = geom.canonicalY * canvasH
-                                val shiftedX = (geom.canonicalX + profile.driftX * 2.2f) * canvasW
-                                val shiftedY = (geom.canonicalY + profile.driftY * 2.2f) * canvasH
-
-                                drawLine(
-                                    color = AdaptiveAmber.copy(alpha = 0.85f),
-                                    start = Offset(cx, cy),
-                                    end = Offset(shiftedX, shiftedY),
-                                    strokeWidth = 3f,
-                                    cap = StrokeCap.Round
-                                )
-                                drawCircle(
-                                    color = AdaptiveAmber,
-                                    radius = 5f,
-                                    center = Offset(shiftedX, shiftedY)
-                                )
-                            }
                         }
 
-                        // Key press popup preview when tapping a single key
+                        // Key press popup preview on single-key tap
                         val currentHover = hoveredKey
                         if (currentHover != null && !isSwipingGesture) {
                             val geom = keyGeometries[currentHover]
@@ -409,20 +483,13 @@ fun FutoGestureKeyboardView(
                                 val popW = geom.width * canvasW * 1.15f
                                 val popH = geom.height * canvasH * 1.1f
                                 val popLeft = (geom.canonicalX * canvasW - popW / 2f).coerceIn(4f, canvasW - popW - 4f)
-                                val popTop = ((geom.canonicalY - geom.height * 1.25f) * canvasH).coerceAtLeast(2f)
+                                val popTop = ((geom.canonicalY - geom.height * 1.2f) * canvasH).coerceAtLeast(2f)
 
                                 drawRoundRect(
-                                    color = FutoSlateBg,
+                                    color = Color(0xFF3C424D),
                                     topLeft = Offset(popLeft, popTop),
                                     size = Size(popW, popH),
-                                    cornerRadius = CornerRadius(16f, 16f)
-                                )
-                                drawRoundRect(
-                                    color = TelemetryCyan,
-                                    topLeft = Offset(popLeft, popTop),
-                                    size = Size(popW, popH),
-                                    cornerRadius = CornerRadius(16f, 16f),
-                                    style = Stroke(width = 3f)
+                                    cornerRadius = CornerRadius(14f, 14f)
                                 )
                                 val popChar = if (shiftState != ShiftState.OFF) currentHover.uppercase() else currentHover.toString()
                                 val popText = textMeasurer.measure(
@@ -430,8 +497,8 @@ fun FutoGestureKeyboardView(
                                     style = TextStyle(
                                         fontFamily = SpaceGroteskFamily,
                                         fontWeight = FontWeight.Bold,
-                                        fontSize = 22.sp,
-                                        color = TelemetryCyan
+                                        fontSize = 23.sp,
+                                        color = TextPrimary
                                     )
                                 )
                                 drawText(
@@ -444,7 +511,7 @@ fun FutoGestureKeyboardView(
                             }
                         }
 
-                        // Active Bezier Swipe Trail
+                        // Clean FUTO Gesture Swipe Trail
                         if (isSwipingGesture && activeTrail.size >= 2) {
                             val trailPath = Path()
                             val first = activeTrail.first()
@@ -466,26 +533,13 @@ fun FutoGestureKeyboardView(
 
                             drawPath(
                                 path = trailPath,
-                                brush = Brush.linearGradient(
-                                    colors = listOf(
-                                        TelemetryCyan.copy(alpha = 0.22f),
-                                        AdaptiveAmber.copy(alpha = 0.40f),
-                                        TelemetryCyan.copy(alpha = 0.52f)
-                                    )
-                                ),
-                                style = Stroke(width = 18f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                                color = TelemetryCyan.copy(alpha = 0.28f),
+                                style = Stroke(width = 14f, cap = StrokeCap.Round, join = StrokeJoin.Round)
                             )
                             drawPath(
                                 path = trailPath,
-                                brush = Brush.linearGradient(
-                                    colors = listOf(TelemetryCyan, AdaptiveAmber, TelemetryCyan)
-                                ),
-                                style = Stroke(width = 6.5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                            )
-                            drawCircle(
                                 color = TelemetryCyan,
-                                radius = 10f,
-                                center = Offset(last.x * canvasW, last.y * canvasH)
+                                style = Stroke(width = 6f, cap = StrokeCap.Round, join = StrokeJoin.Round)
                             )
                         }
                     }
@@ -499,6 +553,10 @@ fun FutoGestureKeyboardView(
                         view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                         onKeyTap(sym)
                     },
+                    onBackspace = {
+                        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        onBackspace()
+                    },
                     onToggleExtended = {
                         view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                         layoutMode = if (layoutMode == KeyboardLayoutMode.SYMBOLS) {
@@ -511,22 +569,21 @@ fun FutoGestureKeyboardView(
             }
         }
 
-        // 4. Bottom Action Row (?123/ABC, Shift, Comma, Spacebar, Period, Backspace, IME Action/Enter)
+        // 4. Authentic FUTO Bottom Row: [ ?123 ]  [ , ]  [      Spacebar      ]  [ . ]  [ Enter ]
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(48.dp)
-                .padding(horizontal = 5.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                .height(50.dp)
+                .padding(horizontal = 5.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // ?123 / ABC mode switch key
-            UtilityKeyButton(
+            // ?123 / ABC key
+            FutoBottomKey(
                 modifier = Modifier
-                    .weight(1.25f)
+                    .weight(1.35f)
                     .testTag("key_mode_switch"),
-                isActive = layoutMode != KeyboardLayoutMode.ALPHABET,
-                activeColor = AdaptiveAmber,
+                backgroundColor = FutoKeyCapSpecial,
                 contentDesc = "Switch symbols or letters",
                 onClick = {
                     view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
@@ -539,59 +596,18 @@ fun FutoGestureKeyboardView(
             ) {
                 Text(
                     text = if (layoutMode == KeyboardLayoutMode.ALPHABET) "?123" else "ABC",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (layoutMode != KeyboardLayoutMode.ALPHABET) AdaptiveAmber else TextPrimary,
-                    fontWeight = FontWeight.Bold
+                    style = MaterialTheme.typography.titleMedium,
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Medium
                 )
             }
 
-            // Shift / Caps Lock key (only in Alphabet mode)
-            if (layoutMode == KeyboardLayoutMode.ALPHABET) {
-                UtilityKeyButton(
-                    modifier = Modifier
-                        .weight(1.1f)
-                        .testTag("key_shift"),
-                    isActive = shiftState != ShiftState.OFF,
-                    activeColor = if (shiftState == ShiftState.CAPS_LOCK) AdaptiveAmber else TelemetryCyan,
-                    contentDesc = "Shift key",
-                    onClick = {
-                        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                        onToggleShift()
-                    }
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(2.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.KeyboardCapslock,
-                            contentDescription = "Shift",
-                            tint = when (shiftState) {
-                                ShiftState.CAPS_LOCK -> AdaptiveAmber
-                                ShiftState.ONE_SHOT -> TelemetryCyan
-                                ShiftState.OFF -> TextPrimary
-                            },
-                            modifier = Modifier.size(19.dp)
-                        )
-                        if (shiftState == ShiftState.CAPS_LOCK) {
-                            Box(
-                                modifier = Modifier
-                                    .size(5.dp)
-                                    .clip(CircleShape)
-                                    .background(AdaptiveAmber)
-                            )
-                        }
-                    }
-                }
-            }
-
             // Comma key
-            UtilityKeyButton(
+            FutoBottomKey(
                 modifier = Modifier
-                    .weight(0.85f)
+                    .weight(0.9f)
                     .testTag("key_comma"),
-                isActive = false,
-                activeColor = TelemetryCyan,
+                backgroundColor = FutoKeyCapSpecial,
                 contentDesc = "Comma key",
                 onClick = {
                     view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
@@ -600,51 +616,36 @@ fun FutoGestureKeyboardView(
             ) {
                 Text(
                     text = ",",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TextPrimary,
-                    fontWeight = FontWeight.Bold
+                    style = MaterialTheme.typography.titleLarge,
+                    color = TextPrimary
                 )
             }
 
             // Spacebar
-            UtilityKeyButton(
+            FutoBottomKey(
                 modifier = Modifier
-                    .weight(3.4f)
+                    .weight(4.3f)
                     .testTag("key_space"),
-                isActive = false,
-                activeColor = TelemetryCyan,
+                backgroundColor = FutoKeyCapSurface,
                 contentDesc = "Spacebar",
                 onClick = {
                     view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                     onSpace()
                 }
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(6.dp)
-                            .clip(CircleShape)
-                            .background(NeuralEmerald)
-                    )
-                    Text(
-                        text = if (composingWord.isNotEmpty()) "SPACE • \"$composingWord\"" else "English (FUTO Adaptive)",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextSecondary,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
+                Text(
+                    text = "English",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextSecondary
+                )
             }
 
             // Period key
-            UtilityKeyButton(
+            FutoBottomKey(
                 modifier = Modifier
-                    .weight(0.85f)
+                    .weight(0.9f)
                     .testTag("key_period"),
-                isActive = false,
-                activeColor = TelemetryCyan,
+                backgroundColor = FutoKeyCapSpecial,
                 contentDesc = "Period key",
                 onClick = {
                     view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
@@ -653,76 +654,167 @@ fun FutoGestureKeyboardView(
             ) {
                 Text(
                     text = ".",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TextPrimary,
-                    fontWeight = FontWeight.Bold
+                    style = MaterialTheme.typography.titleLarge,
+                    color = TextPrimary
                 )
             }
 
-            // Backspace key
-            UtilityKeyButton(
+            // Enter / Action key (FUTO rounded accent pill)
+            Box(
                 modifier = Modifier
-                    .weight(1.15f)
-                    .testTag("key_backspace"),
-                isActive = false,
-                activeColor = TelemetryCyan,
-                contentDesc = "Backspace key",
-                onClick = {
-                    view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    onBackspace()
-                }
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Backspace,
-                    contentDescription = "Backspace",
-                    tint = TextPrimary,
-                    modifier = Modifier.size(19.dp)
-                )
-            }
-
-            // Context-aware IME Action / Enter key
-            UtilityKeyButton(
-                modifier = Modifier
-                    .weight(1.25f)
+                    .weight(1.45f)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(TelemetryCyan)
+                    .clickable {
+                        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        onEnterAction()
+                    }
+                    .semantics { contentDescription = "Enter key" }
                     .testTag("key_enter"),
-                isActive = true,
-                activeColor = TelemetryCyan,
-                contentDesc = "Enter or Action key",
-                onClick = {
-                    view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    onEnterAction()
-                }
+                contentAlignment = Alignment.Center
             ) {
                 when (imeActionType) {
                     ImeActionType.SEARCH -> Icon(
                         imageVector = Icons.Default.Search,
                         contentDescription = "Search",
-                        tint = TelemetryCyan,
-                        modifier = Modifier.size(19.dp)
+                        tint = FutoSlateBg,
+                        modifier = Modifier.size(20.dp)
                     )
                     ImeActionType.SEND -> Icon(
                         imageVector = Icons.AutoMirrored.Filled.Send,
                         contentDescription = "Send",
-                        tint = TelemetryCyan,
-                        modifier = Modifier.size(18.dp)
+                        tint = FutoSlateBg,
+                        modifier = Modifier.size(19.dp)
                     )
                     ImeActionType.DONE -> Icon(
                         imageVector = Icons.Default.Check,
                         contentDescription = "Done",
-                        tint = TelemetryCyan,
-                        modifier = Modifier.size(19.dp)
+                        tint = FutoSlateBg,
+                        modifier = Modifier.size(20.dp)
                     )
                     ImeActionType.GO, ImeActionType.NEXT -> Text(
-                        text = if (imeActionType == ImeActionType.GO) "GO" else "NEXT",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TelemetryCyan,
+                        text = if (imeActionType == ImeActionType.GO) "Go" else "Next",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = FutoSlateBg,
                         fontWeight = FontWeight.Bold
                     )
                     ImeActionType.RETURN -> Icon(
                         imageVector = Icons.AutoMirrored.Filled.KeyboardReturn,
                         contentDescription = "Enter",
-                        tint = TelemetryCyan,
-                        modifier = Modifier.size(19.dp)
+                        tint = FutoSlateBg,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Authentic LatinIME / FUTO 3-Slot Suggestion Strip:
+ * [  2nd Candidate  |  1st Primary Candidate (Bold)  |  3rd Candidate  ] [⚙]
+ */
+@Composable
+private fun LatinImeSuggestionStrip(
+    candidates: List<GestureCandidate>,
+    composingWord: String,
+    isSwiping: Boolean,
+    liveSwipePreviewWord: String?,
+    onOpenSettings: (() -> Unit)?,
+    onCandidateClick: (GestureCandidate, Int) -> Unit
+) {
+    Surface(
+        color = FutoSurface,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(42.dp)
+            .testTag("candidate_suggestion_bar")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (isSwiping && !liveSwipePreviewWord.isNullOrEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = liveSwipePreviewWord,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TelemetryCyan,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            } else {
+                val primary = candidates.getOrNull(0)
+                val second = candidates.getOrNull(1)
+                val third = candidates.getOrNull(2)
+
+                // Left Slot: 2nd candidate
+                SuggestionSlot(
+                    candidate = second,
+                    isPrimary = false,
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("candidate_chip_1"),
+                    onClick = { second?.let { onCandidateClick(it, 1) } }
+                )
+
+                // Thin vertical divider
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .height(20.dp)
+                        .background(Color.White.copy(alpha = 0.12f))
+                )
+
+                // Center Slot: 1st Primary Candidate
+                SuggestionSlot(
+                    candidate = primary,
+                    isPrimary = true,
+                    modifier = Modifier
+                        .weight(1.15f)
+                        .testTag("candidate_chip_0"),
+                    onClick = { primary?.let { onCandidateClick(it, 0) } }
+                )
+
+                // Thin vertical divider
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .height(20.dp)
+                        .background(Color.White.copy(alpha = 0.12f))
+                )
+
+                // Right Slot: 3rd candidate
+                SuggestionSlot(
+                    candidate = third,
+                    isPrimary = false,
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("candidate_chip_2"),
+                    onClick = { third?.let { onCandidateClick(it, 2) } }
+                )
+            }
+
+            if (onOpenSettings != null) {
+                IconButton(
+                    onClick = onOpenSettings,
+                    modifier = Modifier
+                        .size(34.dp)
+                        .testTag("ime_open_settings")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "Keyboard Settings",
+                        tint = TextSecondary,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }
@@ -731,29 +823,57 @@ fun FutoGestureKeyboardView(
 }
 
 @Composable
+private fun SuggestionSlot(
+    candidate: GestureCandidate?,
+    isPrimary: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .clickable(enabled = candidate != null, onClick = onClick)
+            .padding(horizontal = 6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        if (candidate != null) {
+            Text(
+                text = candidate.word,
+                style = MaterialTheme.typography.titleMedium,
+                color = if (isPrimary) TextPrimary else TextSecondary,
+                fontWeight = if (isPrimary) FontWeight.Bold else FontWeight.Normal,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
 private fun SymbolsKeyboardGrid(
     isExtended: Boolean,
     onSymbolTap: (Char) -> Unit,
+    onBackspace: () -> Unit,
     onToggleExtended: () -> Unit
 ) {
     val rows = if (!isExtended) {
         listOf(
             listOf('1', '2', '3', '4', '5', '6', '7', '8', '9', '0'),
             listOf('@', '#', '$', '_', '&', '-', '+', '(', ')', '/'),
-            listOf('*', '"', '\'', ':', ';', '!', '?', '%', '=', '~')
+            listOf('*', '"', '\'', ':', ';', '!', '?')
         )
     } else {
         listOf(
             listOf('~', '`', '|', '•', '√', 'π', '÷', '×', '§', 'Δ'),
             listOf('£', '¢', '€', '¥', '^', '°', '=', '{', '}', '\\'),
-            listOf('%', '©', '®', '™', '✓', '[', ']', '<', '>', '…')
+            listOf('%', '©', '®', '™', '✓', '[', ']')
         )
     }
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .height(166.dp)
+            .height(168.dp)
             .padding(horizontal = 4.dp, vertical = 2.dp),
         verticalArrangement = Arrangement.spacedBy(5.dp)
     ) {
@@ -765,22 +885,20 @@ private fun SymbolsKeyboardGrid(
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 if (rowIdx == 2) {
-                    // =\< toggle key on row 3 left
                     Box(
                         modifier = Modifier
-                            .weight(1.3f)
+                            .weight(1.35f)
                             .fillMaxSize()
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(7.dp))
                             .background(FutoKeyCapSpecial)
-                            .border(1.dp, AdaptiveAmber.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
                             .clickable(onClick = onToggleExtended),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             text = if (!isExtended) "=\\<" else "?123",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = AdaptiveAmber,
-                            fontWeight = FontWeight.Bold
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Medium
                         )
                     }
                 }
@@ -789,178 +907,32 @@ private fun SymbolsKeyboardGrid(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxSize()
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(7.dp))
                             .background(FutoKeyCapSurface)
-                            .border(1.dp, FutoKeyCapBorder, RoundedCornerShape(8.dp))
                             .clickable { onSymbolTap(sym) },
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             text = sym.toString(),
                             style = MaterialTheme.typography.titleMedium,
-                            color = TextPrimary,
-                            fontWeight = FontWeight.Bold
+                            color = TextPrimary
                         )
                     }
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun CandidateSuggestionToolbar(
-    candidates: List<GestureCandidate>,
-    composingWord: String,
-    wasPromotedByAdaptation: Boolean,
-    isSwiping: Boolean,
-    liveSwipePreviewWord: String?,
-    hoveredKey: Char?,
-    showDriftOverlay: Boolean,
-    onToggleDriftOverlay: () -> Unit,
-    onOpenSettings: (() -> Unit)?,
-    onCandidateClick: (GestureCandidate, Int) -> Unit
-) {
-    Surface(
-        color = FutoSlateBg,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(46.dp)
-            .testTag("candidate_suggestion_bar")
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            // Left / Center: Live Gesture Preview OR Candidate Suggestion Strip
-            Box(modifier = Modifier.weight(1f)) {
-                if (isSwiping) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(TelemetryCyan.copy(alpha = 0.2f))
-                                .border(1.dp, TelemetryCyan, RoundedCornerShape(8.dp))
-                                .padding(horizontal = 10.dp, vertical = 4.dp)
-                        ) {
-                            Text(
-                                text = liveSwipePreviewWord ?: hoveredKey?.uppercase() ?: "…",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = TelemetryCyan,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                        Text(
-                            text = "Gesture decoding…",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = TextSecondary
-                        )
-                    }
-                } else if (candidates.isNotEmpty()) {
-                    Row(
+                if (rowIdx == 2) {
+                    Box(
                         modifier = Modifier
+                            .weight(1.35f)
                             .fillMaxSize()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .clip(RoundedCornerShape(7.dp))
+                            .background(FutoKeyCapSpecial)
+                            .clickable(onClick = onBackspace),
+                        contentAlignment = Alignment.Center
                     ) {
-                        candidates.take(5).forEachIndexed { idx, candidate ->
-                            val isTop = idx == 0
-                            val isPromoted = isTop && wasPromotedByAdaptation
-                            val borderColor = when {
-                                isPromoted -> AdaptiveAmber
-                                isTop -> TelemetryCyan
-                                else -> FutoKeyCapBorder
-                            }
-                            val bgColor = when {
-                                isPromoted -> AdaptiveAmber.copy(alpha = 0.16f)
-                                isTop -> TelemetryCyan.copy(alpha = 0.14f)
-                                else -> FutoKeyCapSurface.copy(alpha = 0.8f)
-                            }
-
-                            Row(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(bgColor)
-                                    .border(1.dp, borderColor, RoundedCornerShape(8.dp))
-                                    .clickable { onCandidateClick(candidate, idx) }
-                                    .padding(horizontal = 10.dp, vertical = 5.dp)
-                                    .testTag("candidate_chip_$idx"),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(5.dp)
-                            ) {
-                                if (isPromoted) {
-                                    Icon(
-                                        imageVector = Icons.Default.AutoAwesome,
-                                        contentDescription = "Adapted style prediction",
-                                        tint = AdaptiveAmber,
-                                        modifier = Modifier.size(13.dp)
-                                    )
-                                }
-                                Text(
-                                    text = candidate.word,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = TextPrimary,
-                                    fontWeight = if (isTop) FontWeight.Bold else FontWeight.Medium
-                                )
-                                Text(
-                                    text = candidate.explanationBadge,
-                                    style = TextStyle(
-                                        fontFamily = JetBrainsMonoFamily,
-                                        fontSize = 8.sp,
-                                        color = if (isPromoted) AdaptiveAmber else TextMuted
-                                    )
-                                )
-                            }
-                        }
-                    }
-                } else {
-                    Text(
-                        text = if (composingWord.isNotEmpty()) "Typing: $composingWord" else "FUTO Adaptive Keyboard",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = TextSecondary,
-                        modifier = Modifier.padding(horizontal = 8.dp)
-                    )
-                }
-            }
-
-            // Right utility icons: Learned Key Drift Vectors Toggle + Settings Icon
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                IconButton(
-                    onClick = onToggleDriftOverlay,
-                    modifier = Modifier
-                        .size(34.dp)
-                        .testTag("key_drift_hud")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.MyLocation,
-                        contentDescription = "Toggle Learned Key Drift Vectors",
-                        tint = if (showDriftOverlay) AdaptiveAmber else TextMuted,
-                        modifier = Modifier.size(17.dp)
-                    )
-                }
-                if (onOpenSettings != null) {
-                    IconButton(
-                        onClick = onOpenSettings,
-                        modifier = Modifier
-                            .size(34.dp)
-                            .testTag("ime_open_settings")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Settings,
-                            contentDescription = "Keyboard Settings",
-                            tint = TextSecondary,
-                            modifier = Modifier.size(17.dp)
+                        Text(
+                            text = "⌫",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = TextPrimary
                         )
                     }
                 }
@@ -970,24 +942,18 @@ private fun CandidateSuggestionToolbar(
 }
 
 @Composable
-private fun UtilityKeyButton(
+private fun FutoBottomKey(
     modifier: Modifier = Modifier,
-    isActive: Boolean,
-    activeColor: Color,
+    backgroundColor: Color,
     contentDesc: String,
     onClick: () -> Unit,
     content: @Composable () -> Unit
 ) {
     Box(
         modifier = modifier
-            .height(42.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(if (isActive) activeColor.copy(alpha = 0.18f) else FutoKeyCapSpecial)
-            .border(
-                width = 1.dp,
-                color = if (isActive) activeColor else FutoKeyCapBorder,
-                shape = RoundedCornerShape(8.dp)
-            )
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(7.dp))
+            .background(backgroundColor)
             .clickable(onClick = onClick)
             .semantics { contentDescription = contentDesc },
         contentAlignment = Alignment.Center

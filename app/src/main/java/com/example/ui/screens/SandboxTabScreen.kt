@@ -7,6 +7,7 @@ import android.view.inputmethod.InputMethodManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,15 +19,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Keyboard
-import androidx.compose.material.icons.filled.MyLocation
-import androidx.compose.material.icons.filled.Numbers
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.Button
@@ -38,6 +37,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -68,7 +69,6 @@ import com.example.engine.KeyGeometry
 import com.example.engine.RawTouchPoint
 import com.example.ui.StudioUiState
 import com.example.ui.components.FutoGestureKeyboardView
-import com.example.ui.theme.AdaptiveAmber
 import com.example.ui.theme.FutoKeyCapBorder
 import com.example.ui.theme.FutoKeyCapSurface
 import com.example.ui.theme.FutoSlateBg
@@ -80,20 +80,26 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 
+/**
+ * Clean FUTO Keyboard Settings & Input Screen:
+ * - System IME Setup (Enable in Settings & Select Input Method)
+ * - Test Typing & Swipe Area
+ * - Number Row Toggle & Learned Used-Words History
+ * - Docked FUTO Keyboard sitting cleanly above Android system navigation buttons
+ */
 @Composable
 fun SandboxTabScreen(
     uiState: StudioUiState,
     keyGeometries: Map<Char, KeyGeometry>,
     spatialProfiles: Map<Char, KeySpatialProfileEntity>,
+    userWords: List<UserWordFrequencyEntity>,
     userWordsMap: Map<String, UserWordFrequencyEntity>,
     userBigramsMap: Map<Pair<String, String>, UserBigramEntity>,
-    totalLearnedHits: Int,
-    learnedPrototypesCount: Int,
     onExternalTextChange: (String) -> Unit,
     onClearEditor: () -> Unit,
     onToggleShift: () -> Unit,
-    onToggleDriftOverlay: () -> Unit,
     onToggleNumberRow: (Boolean) -> Unit,
+    onClearLearnedWords: () -> Unit,
     onKeyTap: (Char) -> Unit,
     onGesturePreview: (List<RawTouchPoint>) -> String?,
     onGestureCompleted: (List<RawTouchPoint>) -> Unit,
@@ -152,65 +158,75 @@ fun SandboxTabScreen(
             modifier = Modifier
                 .weight(1f)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // 1. System Keyboard Activation & Status Card (FUTO Keyboard Onboarding)
+            // App Title Bar
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Keyboard,
+                        contentDescription = null,
+                        tint = TelemetryCyan,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Text(
+                        text = "FUTO Keyboard",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = TextPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                if (isImeSelectedAsDefault) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = "Active IME",
+                            tint = NeuralEmerald,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "Default Keyboard",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = NeuralEmerald
+                        )
+                    }
+                }
+            }
+
+            // System IME Setup Card
             Surface(
                 color = FutoSurface,
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(12.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(
-                        width = 1.dp,
-                        color = if (isImeSelectedAsDefault) NeuralEmerald.copy(alpha = 0.6f) else FutoKeyCapBorder,
-                        shape = RoundedCornerShape(14.dp)
-                    )
+                    .border(1.dp, FutoKeyCapBorder, RoundedCornerShape(12.dp))
             ) {
                 Column(
                     modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (isImeSelectedAsDefault) Icons.Default.CheckCircle else Icons.Default.Keyboard,
-                                contentDescription = null,
-                                tint = if (isImeSelectedAsDefault) NeuralEmerald else TelemetryCyan,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Column {
-                                Text(
-                                    text = if (isImeSelectedAsDefault) {
-                                        "FUTO ADAPTIVE KEYBOARD ACTIVE"
-                                    } else {
-                                        "SYSTEM ANDROID KEYBOARD SETUP"
-                                    },
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = if (isImeSelectedAsDefault) NeuralEmerald else TextPrimary,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = "$totalLearnedHits learned key alignments • $learnedPrototypesCount personal swipe prototypes",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = TextSecondary
-                                )
-                            }
-                        }
-                    }
-
+                    Text(
+                        text = "System Keyboard Setup",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TextPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Step 1: Enable in Android System Settings
                         Button(
                             onClick = {
                                 try {
@@ -222,7 +238,7 @@ fun SandboxTabScreen(
                                 containerColor = if (isImeEnabledInSystem) FutoSurfaceElevated else TelemetryCyan,
                                 contentColor = if (isImeEnabledInSystem) NeuralEmerald else FutoSlateBg
                             ),
-                            shape = RoundedCornerShape(10.dp),
+                            shape = RoundedCornerShape(8.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .height(48.dp)
@@ -235,13 +251,12 @@ fun SandboxTabScreen(
                             )
                             Spacer(modifier = Modifier.size(6.dp))
                             Text(
-                                text = if (isImeEnabledInSystem) "1. IME Enabled" else "1. Enable IME",
+                                text = if (isImeEnabledInSystem) "1. Enabled" else "1. Enable IME",
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold
                             )
                         }
 
-                        // Step 2: Select Active Input Method via System Picker
                         OutlinedButton(
                             onClick = {
                                 try {
@@ -253,7 +268,7 @@ fun SandboxTabScreen(
                                     context.startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
                                 }
                             },
-                            shape = RoundedCornerShape(10.dp),
+                            shape = RoundedCornerShape(8.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .height(48.dp)
@@ -267,7 +282,7 @@ fun SandboxTabScreen(
                             )
                             Spacer(modifier = Modifier.size(6.dp))
                             Text(
-                                text = "2. Select Keyboard",
+                                text = "2. Switch IME",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = TelemetryCyan,
                                 fontWeight = FontWeight.Bold
@@ -277,13 +292,13 @@ fun SandboxTabScreen(
                 }
             }
 
-            // 2. Live Keyboard Input Field + Quick Layout Toggles
+            // Test Input Field
             Surface(
                 color = FutoSurface,
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(12.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.dp, FutoKeyCapBorder, RoundedCornerShape(14.dp))
+                    .border(1.dp, FutoKeyCapBorder, RoundedCornerShape(12.dp))
             ) {
                 Column(
                     modifier = Modifier.padding(12.dp),
@@ -294,187 +309,217 @@ fun SandboxTabScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        Text(
+                            text = "Test Typing & Gesture Swiping",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Medium
+                        )
+                        IconButton(
+                            onClick = onClearEditor,
+                            modifier = Modifier
+                                .size(32.dp)
+                                .testTag("clear_editor_button")
                         ) {
-                            Text(
-                                text = "TEST KEYBOARD & GESTURE INPUT",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = TelemetryCyan,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            // Number row toggle chip
-                            Row(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (uiState.showNumberRow) TelemetryCyan.copy(alpha = 0.16f) else FutoKeyCapSurface)
-                                    .border(
-                                        1.dp,
-                                        if (uiState.showNumberRow) TelemetryCyan else FutoKeyCapBorder,
-                                        RoundedCornerShape(8.dp)
-                                    )
-                                    .clickable { onToggleNumberRow(!uiState.showNumberRow) }
-                                    .padding(horizontal = 8.dp, vertical = 4.dp)
-                                    .testTag("toggle_number_row_chip"),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Numbers,
-                                    contentDescription = "Number Row",
-                                    tint = if (uiState.showNumberRow) TelemetryCyan else TextSecondary,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Text(
-                                    text = "123 Row",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (uiState.showNumberRow) TelemetryCyan else TextSecondary
-                                )
-                            }
-
-                            // Drift HUD toggle chip
-                            Row(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (uiState.showDriftOverlay) AdaptiveAmber.copy(alpha = 0.16f) else FutoKeyCapSurface)
-                                    .border(
-                                        1.dp,
-                                        if (uiState.showDriftOverlay) AdaptiveAmber else FutoKeyCapBorder,
-                                        RoundedCornerShape(8.dp)
-                                    )
-                                    .clickable { onToggleDriftOverlay() }
-                                    .padding(horizontal = 8.dp, vertical = 4.dp)
-                                    .testTag("toggle_drift_chip"),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.MyLocation,
-                                    contentDescription = "Key Drift Overlay",
-                                    tint = if (uiState.showDriftOverlay) AdaptiveAmber else TextSecondary,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Text(
-                                    text = "Drift HUD",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (uiState.showDriftOverlay) AdaptiveAmber else TextSecondary
-                                )
-                            }
-
-                            IconButton(
-                                onClick = onClearEditor,
-                                modifier = Modifier
-                                    .size(30.dp)
-                                    .testTag("clear_editor_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.DeleteSweep,
-                                    contentDescription = "Clear text",
-                                    tint = TextSecondary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    // Active Composing + Committed Text Preview Box
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(82.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(FutoSurfaceElevated)
-                            .border(1.dp, FutoKeyCapBorder, RoundedCornerShape(10.dp))
-                            .padding(10.dp)
-                            .testTag("live_keyboard_text_box")
-                    ) {
-                        if (uiState.editorText.isEmpty() && uiState.composingWord.isEmpty()) {
-                            Text(
-                                text = "Type individual letters or swipe across keys on the keyboard below. Backspace undoes swiped words and teaches your personal style.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = TextMuted
-                            )
-                        } else {
-                            val annotated = buildAnnotatedString {
-                                withStyle(SpanStyle(color = TextPrimary)) {
-                                    append(uiState.editorText)
-                                }
-                                if (uiState.composingWord.isNotEmpty()) {
-                                    withStyle(
-                                        SpanStyle(
-                                            color = TelemetryCyan,
-                                            fontWeight = FontWeight.Bold,
-                                            textDecoration = TextDecoration.Underline
-                                        )
-                                    ) {
-                                        append(uiState.composingWord)
-                                    }
-                                }
-                                withStyle(SpanStyle(color = TelemetryCyan)) {
-                                    append("▎")
-                                }
-                            }
-                            Text(
-                                text = annotated,
-                                style = MaterialTheme.typography.bodyLarge
+                            Icon(
+                                imageVector = Icons.Default.DeleteSweep,
+                                contentDescription = "Clear text",
+                                tint = TextSecondary,
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                     }
 
-                    // Also provide a native Android OutlinedTextField when the user wants to test the system-wide IME popup
                     if (isImeSelectedAsDefault) {
                         OutlinedTextField(
                             value = uiState.editorText,
                             onValueChange = onExternalTextChange,
-                            label = {
+                            placeholder = {
                                 Text(
-                                    "Tap here to invoke system-wide FUTO IME popup",
-                                    style = MaterialTheme.typography.labelSmall
+                                    "Tap here to type or swipe with FUTO Keyboard…",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = TextMuted
                                 )
                             },
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = NeuralEmerald,
+                                focusedBorderColor = TelemetryCyan,
                                 unfocusedBorderColor = FutoKeyCapBorder,
                                 focusedTextColor = TextPrimary,
                                 unfocusedTextColor = TextPrimary
                             ),
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .height(92.dp)
                                 .testTag("system_ime_test_field")
                         )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(86.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(FutoSurfaceElevated)
+                                .border(1.dp, FutoKeyCapBorder, RoundedCornerShape(8.dp))
+                                .padding(10.dp)
+                                .testTag("live_keyboard_text_box")
+                        ) {
+                            if (uiState.editorText.isEmpty() && uiState.composingWord.isEmpty()) {
+                                Text(
+                                    text = "Swipe across keys or tap letters on the keyboard below…",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = TextMuted
+                                )
+                            } else {
+                                val annotated = buildAnnotatedString {
+                                    withStyle(SpanStyle(color = TextPrimary)) {
+                                        append(uiState.editorText)
+                                    }
+                                    if (uiState.composingWord.isNotEmpty()) {
+                                        withStyle(
+                                            SpanStyle(
+                                                color = TelemetryCyan,
+                                                fontWeight = FontWeight.Bold,
+                                                textDecoration = TextDecoration.Underline
+                                            )
+                                        ) {
+                                            append(uiState.composingWord)
+                                        }
+                                    }
+                                    withStyle(SpanStyle(color = TelemetryCyan)) {
+                                        append("▎")
+                                    }
+                                }
+                                Text(
+                                    text = annotated,
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Keyboard Preferences & Prioritized Used Words
+            Surface(
+                color = FutoSurface,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, FutoKeyCapBorder, RoundedCornerShape(12.dp))
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "Show Number Row",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = TextPrimary
+                            )
+                            Text(
+                                text = "Display dedicated 1–0 number keys above top row",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextSecondary
+                            )
+                        }
+                        Switch(
+                            checked = uiState.showNumberRow,
+                            onCheckedChange = onToggleNumberRow,
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = TelemetryCyan,
+                                checkedTrackColor = TelemetryCyan.copy(alpha = 0.28f)
+                            ),
+                            modifier = Modifier.testTag("toggle_number_row_switch")
+                        )
+                    }
+
+                    if (userWords.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Prioritized Used Words (${userWords.size})",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = TextSecondary
+                            )
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable { onClearLearnedWords() }
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DeleteOutline,
+                                    contentDescription = "Clear history",
+                                    tint = TextSecondary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = "Clear",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TextSecondary
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            userWords.take(15).forEach { entry ->
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(FutoKeyCapSurface)
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = "${entry.word} (${entry.personalUseCount}x)",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = TextPrimary
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // Docked Real FUTO Adaptive Keyboard View (supports both tap-composing and gesture swiping)
-        FutoGestureKeyboardView(
-            keyGeometries = keyGeometries,
-            spatialProfiles = spatialProfiles,
-            candidates = activeCandidates,
-            composingWord = uiState.composingWord,
-            lastDecodeResult = if (uiState.justCommittedGestureWord) uiState.lastDecodeResult else null,
-            showDriftOverlay = uiState.showDriftOverlay,
-            showNumberRow = uiState.showNumberRow,
-            shiftState = uiState.shiftState,
-            onToggleShift = onToggleShift,
-            onToggleDriftOverlay = onToggleDriftOverlay,
-            onKeyTap = onKeyTap,
-            onGesturePreview = onGesturePreview,
-            onGestureCompleted = onGestureCompleted,
-            onCandidateSelected = onCandidateSelected,
-            onBackspace = onBackspace,
-            onSpace = onSpace,
-            onPunctuation = onPunctuation,
-            onEnterAction = onEnter
-        )
+        // Show docked keyboard when system IME is not already replacing it, sitting cleanly above navigation buttons
+        if (!isImeSelectedAsDefault) {
+            FutoGestureKeyboardView(
+                keyGeometries = keyGeometries,
+                spatialProfiles = spatialProfiles,
+                candidates = activeCandidates,
+                composingWord = uiState.composingWord,
+                lastDecodeResult = if (uiState.justCommittedGestureWord) uiState.lastDecodeResult else null,
+                showDriftOverlay = false,
+                showNumberRow = uiState.showNumberRow,
+                shiftState = uiState.shiftState,
+                onToggleShift = onToggleShift,
+                onKeyTap = onKeyTap,
+                onGesturePreview = onGesturePreview,
+                onGestureCompleted = onGestureCompleted,
+                onCandidateSelected = onCandidateSelected,
+                onBackspace = onBackspace,
+                onSpace = onSpace,
+                onPunctuation = onPunctuation,
+                onEnterAction = onEnter
+            )
+        }
     }
 }
 

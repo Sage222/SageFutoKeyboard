@@ -6,12 +6,10 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.AdaptiveStyleRepository
 import com.example.data.GesturePrototypeEntity
-import com.example.data.GestureSessionLogEntity
 import com.example.data.KeySpatialProfileEntity
 import com.example.data.UserBigramEntity
 import com.example.data.UserWordFrequencyEntity
 import com.example.engine.DecoderHyperparameters
-import com.example.engine.FutoLexicon
 import com.example.engine.GestureCandidate
 import com.example.engine.GestureDecodeResult
 import com.example.engine.KeyGeometry
@@ -24,7 +22,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlin.math.sin
 
 data class StudioUiState(
     val editorText: String = "",
@@ -33,8 +30,7 @@ data class StudioUiState(
     val prevContextWord: String = "",
     val justCommittedGestureWord: Boolean = false,
     val shiftState: ShiftState = ShiftState.ONE_SHOT,
-    val showNumberRow: Boolean = true,
-    val showDriftOverlay: Boolean = false,
+    val showNumberRow: Boolean = false,
     val hyperparams: DecoderHyperparameters = DecoderHyperparameters(),
     val lastDecodeResult: GestureDecodeResult? = null,
     val rejectedGestureDecode: GestureDecodeResult? = null
@@ -64,18 +60,6 @@ class FutoStudioViewModel(
     val gesturePrototypes: StateFlow<List<GesturePrototypeEntity>> = repository.prototypesFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val sessionLogs: StateFlow<List<GestureSessionLogEntity>> = repository.recentLogsFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    init {
-        viewModelScope.launch {
-            repository.ensureStarterSeedIfEmpty()
-        }
-    }
-
-    /**
-     * Handles user editing the native Android TextField directly via system IME or cursor.
-     */
     fun onExternalEditorTextChanged(newText: String) {
         val words = extractWords(newText)
         _uiState.update {
@@ -89,9 +73,6 @@ class FutoStudioViewModel(
         }
     }
 
-    /**
-     * Handles single-key tap (letters compose a word; numbers/symbols commit immediately).
-     */
     fun onKeyTap(ch: Char) {
         val state = _uiState.value
         if (ch.isLetter()) {
@@ -129,9 +110,6 @@ class FutoStudioViewModel(
         ).adaptiveTopWord.ifEmpty { null }
     }
 
-    /**
-     * Handles a completed continuous swipe gesture across the keyboard.
-     */
     fun onGestureCompleted(rawPoints: List<RawTouchPoint>) {
         if (rawPoints.isEmpty()) return
         val preFlushedState = flushComposingWordIfNeeded(_uiState.value, appendSpace = true)
@@ -157,7 +135,6 @@ class FutoStudioViewModel(
         val committed = applyShift(topCandidate.word, preFlushedState.shiftState)
         val newEditorText = appendWordToText(preFlushedState.editorText, committed)
         val nextShift = if (preFlushedState.shiftState == ShiftState.ONE_SHOT) ShiftState.OFF else preFlushedState.shiftState
-
         val rejected = preFlushedState.rejectedGestureDecode
 
         _uiState.update {
@@ -184,13 +161,9 @@ class FutoStudioViewModel(
         }
     }
 
-    /**
-     * Triggered when the user taps a candidate in the suggestion strip.
-     */
     fun onCandidateSelected(candidate: GestureCandidate, isCorrection: Boolean) {
         val state = _uiState.value
         if (state.composingWord.isNotEmpty()) {
-            // Complete the currently composing tap-typed word
             val formatted = if (state.composingWord.first().isUpperCase()) {
                 candidate.word.replaceFirstChar { it.uppercase() }
             } else {
@@ -221,7 +194,7 @@ class FutoStudioViewModel(
                         isExplicitUserCorrection = true
                     )
                 } else {
-                    repository.addCustomVocabularyWord(candidate.word, contextForLearn)
+                    repository.recordUsedWord(candidate.word, contextForLearn)
                 }
             }
         } else if (state.justCommittedGestureWord && state.lastDecodeResult != null) {
@@ -251,9 +224,9 @@ class FutoStudioViewModel(
                 )
             }
         } else {
-            // Next-word prediction chip tap
             val formatted = applyShift(candidate.word, state.shiftState)
             val newText = appendWordToText(state.editorText, formatted)
+            val contextForLearn = state.prevContextWord
             val nextShift = if (state.shiftState == ShiftState.ONE_SHOT) ShiftState.OFF else state.shiftState
             _uiState.update {
                 it.copy(
@@ -262,6 +235,9 @@ class FutoStudioViewModel(
                     prevContextWord = candidate.word.lowercase(),
                     shiftState = nextShift
                 )
+            }
+            viewModelScope.launch {
+                repository.recordUsedWord(candidate.word, contextForLearn)
             }
         }
     }
@@ -275,7 +251,6 @@ class FutoStudioViewModel(
         }
 
         if (state.justCommittedGestureWord && state.lastCommittedWord.isNotEmpty()) {
-            // FUTO / LatinIME single-backspace gesture undo + arm correction learning!
             val trimmed = state.editorText.trimEnd()
             val lastSpace = trimmed.lastIndexOfAny(charArrayOf(' ', '\n'))
             val nextText = if (lastSpace >= 0) trimmed.substring(0, lastSpace + 1) else ""
@@ -314,7 +289,6 @@ class FutoStudioViewModel(
             val flushed = flushComposingWordIfNeeded(state, appendSpace = true)
             _uiState.update { flushed.copy(justCommittedGestureWord = false) }
         } else if ((now - lastSpaceTapMs) < 350L && state.editorText.endsWith(" ") && state.editorText.length >= 2) {
-            // Double-space period
             val withoutSpace = state.editorText.dropLast(1) + ". "
             _uiState.update {
                 it.copy(
@@ -371,10 +345,6 @@ class FutoStudioViewModel(
         lastShiftTapMs = now
     }
 
-    fun toggleDriftOverlay() {
-        _uiState.update { it.copy(showDriftOverlay = !it.showDriftOverlay) }
-    }
-
     fun toggleNumberRow(enabled: Boolean) {
         _uiState.update { it.copy(showNumberRow = enabled) }
     }
@@ -392,50 +362,7 @@ class FutoStudioViewModel(
         }
     }
 
-    /**
-     * Used in the Decoder Lab tab to inspect how the gesture engine decodes a specific word.
-     */
-    fun inspectWordGestureInLab(targetWord: String) {
-        val clean = targetWord.trim().lowercase().filter { it in 'a'..'z' }
-        if (clean.isEmpty()) return
-        val profileMap = spatialProfiles.value.associateBy { it.keyChar.first() }
-        val densePairs = repository.gestureEngine.buildWordTemplate32(clean, profileMap, targetCount = 28)
-        val startClock = SystemClock.uptimeMillis()
-        val rawPoints = densePairs.mapIndexed { idx, (px, py) ->
-            val t = idx.toFloat() / (densePairs.size - 1).coerceAtLeast(1)
-            val microWave = sin(t * 9.0).toFloat() * 0.004f
-            RawTouchPoint(
-                x = (px + microWave).coerceIn(0.02f, 0.98f),
-                y = (py - microWave * 0.8f).coerceIn(0.04f, 0.96f),
-                timestampMs = startClock + (idx * 16L)
-            )
-        }
-        val state = _uiState.value
-        val decodeResult = repository.gestureEngine.decodeGesture(
-            rawPoints = rawPoints,
-            prevContextWord = state.prevContextWord,
-            hyperparams = state.hyperparams,
-            spatialProfiles = profileMap,
-            userWords = userWords.value.associateBy { it.word },
-            userBigrams = userBigrams.value.associateBy { it.prevWord to it.nextWord },
-            userPrototypes = gesturePrototypes.value.associateBy { it.word }
-        )
-        _uiState.update { it.copy(lastDecodeResult = decodeResult) }
-    }
-
-    fun updateHyperparameters(transform: (DecoderHyperparameters) -> DecoderHyperparameters) {
-        _uiState.update { state ->
-            state.copy(hyperparams = transform(state.hyperparams))
-        }
-    }
-
-    fun applyThumbCalibrationPreset(rightHanded: Boolean) {
-        viewModelScope.launch {
-            repository.applyErgonomicThumbPreset(rightHanded)
-        }
-    }
-
-    fun addCustomWord(word: String, prevContextWord: String) {
+    fun addCustomWord(word: String, prevContextWord: String = "") {
         viewModelScope.launch {
             repository.addCustomVocabularyWord(word, prevContextWord)
         }
@@ -470,7 +397,7 @@ class FutoStudioViewModel(
                     isExplicitUserCorrection = true
                 )
             } else if (clean.isNotEmpty()) {
-                repository.addCustomVocabularyWord(clean, contextForLearn)
+                repository.recordUsedWord(clean, contextForLearn)
             }
         }
 

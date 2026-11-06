@@ -2,21 +2,22 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// FUTO-inspired Precision Dark Palette with Telemetry Cyan & Adaptive Amber Accents
-val FutoSlateBg = Color(0xFF0B0F17)
-val FutoSurface = Color(0xFF131A26)
-val FutoSurfaceElevated = Color(0xFF1B2434)
-val FutoKeyCapSurface = Color(0xFF212B3D)
-val FutoKeyCapSpecial = Color(0xFF172030)
-val FutoKeyCapBorder = Color(0xFF2E3C54)
+// Authentic FUTO Keyboard / LatinIME Material 3 Dark Palette
+val FutoSlateBg = Color(0xFF141619)
+val FutoSurface = Color(0xFF1B1E23)
+val FutoSurfaceElevated = Color(0xFF252930)
+val FutoKeyCapSurface = Color(0xFF2E333B)
+val FutoKeyCapSpecial = Color(0xFF22262C)
+val FutoKeyCapBorder = Color(0xFF3A404A)
 
-val TelemetryCyan = Color(0xFF00E5FF)
-val TelemetryCyanDim = Color(0xFF007C91)
-val AdaptiveAmber = Color(0xFFFFB300)
-val AdaptiveAmberDim = Color(0xFF8C6200)
-val NeuralEmerald = Color(0xFF00E676)
-val CoralAlert = Color(0xFFFF5252)
+// Clean FUTO Accent & Gesture Trail Colors
+val TelemetryCyan = Color(0xFF68B5F8)
+val TelemetryCyanDim = Color(0xFF3B6994)
+val AdaptiveAmber = Color(0xFF8AB4F8)
+val AdaptiveAmberDim = Color(0xFF4A658A)
+val NeuralEmerald = Color(0xFF81C995)
+val CoralAlert = Color(0xFFF28B82)
 
-val TextPrimary = Color(0xFFF1F5F9)
-val TextSecondary = Color(0xFF94A3B8)
-val TextMuted = Color(0xFF64748B)
+val TextPrimary = Color(0xFFE8EAED)
+val TextSecondary = Color(0xFF9AA0A6)
+val TextMuted = Color(0xFF70757A)

@@ -370,7 +370,9 @@ object FutoLexicon {
 
         val combinedPool = HashMap<String, Int>(defaultWordsWithFreq)
         for ((w, u) in userWords) {
-            combinedPool[w] = (combinedPool[w] ?: 180) + u.personalUseCount * 8 + u.correctionSelectCount * 15
+            // Boost already-used words strongly so they always rank above unused dictionary words
+            val usedBonus = u.personalUseCount * 18 + u.correctionSelectCount * 30 + (if (u.isCustomWord) 25 else 0)
+            combinedPool[w] = (combinedPool[w] ?: 195) + usedBonus
         }
 
         for ((word, freq) in combinedPool) {
@@ -381,21 +383,22 @@ object FutoLexicon {
 
             if (!isPrefixMatch && !isSameLenTypo) continue
 
-            val lenDiffPenalty = (word.length - cleanPrefix.length).coerceAtLeast(0) * 2.2f
+            val lenDiffPenalty = (word.length - cleanPrefix.length).coerceAtLeast(0) * 2.0f
             val baseScore = if (isPrefixMatch) {
-                (76f + (freq - 180) * 0.25f - lenDiffPenalty).coerceIn(50f, 90f)
+                (76f + (freq - 180) * 0.25f - lenDiffPenalty).coerceIn(50f, 92f)
             } else {
-                (78f + (freq - 180) * 0.22f).coerceIn(55f, 89f)
+                (78f + (freq - 180) * 0.22f).coerceIn(55f, 90f)
             }
 
             val bigramBoost = if (prevNorm.isNotEmpty()) {
-                ((userBigrams[prevNorm to word]?.transitionCount ?: 0) * 3.2f +
+                ((userBigrams[prevNorm to word]?.transitionCount ?: 0) * 4.5f +
                     (starterBigrams[prevNorm to word] ?: 0) * 1.8f)
             } else 0f
-            val personalBoost = (userWords[word]?.personalUseCount ?: 0) * 1.5f +
-                (userWords[word]?.correctionSelectCount ?: 0) * 2.5f
+            val useCount = userWords[word]?.personalUseCount ?: 0
+            val personalBoost = useCount * 3.2f +
+                (userWords[word]?.correctionSelectCount ?: 0) * 4.5f
 
-            val total = (baseScore + bigramBoost + personalBoost).coerceIn(40f, 98.5f)
+            val total = (baseScore + bigramBoost + personalBoost).coerceIn(40f, 99.5f)
             results.add(
                 GestureCandidate(
                     word = word,
@@ -406,11 +409,7 @@ object FutoLexicon {
                     inflectionMatchScore = 90f,
                     contextBigramBoost = bigramBoost,
                     personalStyleBoost = bigramBoost + personalBoost,
-                    explanationBadge = when {
-                        bigramBoost >= 2f -> "+N-Gram"
-                        isSameLenTypo -> "Auto-Correct"
-                        else -> "Completion"
-                    }
+                    explanationBadge = if (useCount > 0) "Used" else ""
                 )
             )
         }
